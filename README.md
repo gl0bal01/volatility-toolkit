@@ -1,5 +1,6 @@
 # Volatility Toolkit
 
+[![Lint](https://github.com/gl0bal01/volatility-toolkit/actions/workflows/lint.yml/badge.svg)](https://github.com/gl0bal01/volatility-toolkit/actions/workflows/lint.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 [![Volatility 3](https://img.shields.io/badge/Volatility-3-blue)](https://github.com/volatilityfoundation/volatility3)
 [![Shell](https://img.shields.io/badge/Shell-Bash%204%2B-green)](scripts/vol-analyze.sh)
@@ -8,6 +9,14 @@
 **Automated memory forensics for Windows, Linux, and macOS.** Auto-detects the OS, runs the right plugins in parallel, extracts IOCs, generates structured reports — one command.
 
 > Built for DFIR practitioners who are tired of running the same 20+ `vol` commands manually on every case.
+
+## Demo
+
+<!-- Replace this with your asciinema recording or GIF -->
+<!-- To record: asciinema rec demo.cast -c './scripts/vol-analyze.sh memory.raw --os windows --extract-strings --json' -->
+<!-- To embed: [![asciicast](https://asciinema.org/a/YOUR_ID.svg)](https://asciinema.org/a/YOUR_ID) -->
+
+> **TODO:** Record a demo with a real memory dump, then replace this section.
 
 ## Quick Start
 
