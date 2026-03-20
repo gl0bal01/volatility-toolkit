@@ -6,9 +6,11 @@
 [![Shell](https://img.shields.io/badge/Shell-Bash%204%2B-green)](scripts/vol-analyze.sh)
 [![DFIR](https://img.shields.io/badge/DFIR-Toolkit-critical)](https://gl0bal01.com/intel-codex/category/analysis)
 
-**Automated memory forensics for Windows, Linux, and macOS.** Auto-detects the OS, runs the right plugins in parallel, extracts IOCs, generates structured reports — one command.
+**Memory forensics automation for Windows, Linux, and macOS.** Auto-detects the OS, runs the right plugins in parallel, extracts IOCs, and generates structured reports.
 
 > Built for DFIR practitioners who are tired of running the same 20+ `vol` commands manually on every case.
+>
+> **Note:** Windows dumps work out of the box. Linux and macOS analysis requires [kernel symbols](#linuxmacos-memory-dumps) to be installed first.
 
 ## Demo
 
@@ -33,6 +35,8 @@ chmod +x scripts/vol-analyze.sh
 ./scripts/vol-analyze.sh memory.raw
 ```
 
+> **Prerequisite:** Volatility 3 must be installed and available as `vol` in your PATH. For Linux/macOS memory dumps, you also need matching [kernel symbols](#linuxmacos-memory-dumps).
+
 ## What It Does
 
 1. **Auto-detects** whether the dump is Windows, Linux, or macOS
@@ -46,11 +50,11 @@ chmod +x scripts/vol-analyze.sh
 
 ## Platform Support
 
-| OS | Plugins | Highlights |
-|----|---------|------------|
-| **Windows** | 30 | Processes, DLLs, network, registry, services, malware detection, kernel drivers, SSDT |
-| **Linux** | 21 | Processes, bash history, kernel modules, network, rootkit checks (syscall/IDT/creds) |
-| **macOS** | 20 | Processes, kexts, network, TrustedBSD, kauth listeners, syscall/sysctl checks |
+| OS | Plugins | Highlights | Prerequisites |
+|----|---------|------------|---------------|
+| **Windows** | 30 | Processes, DLLs, network, registry, services, malware detection, kernel drivers, SSDT | None (symbols bundled with Volatility 3) |
+| **Linux** | 21 | Processes, bash history, kernel modules, network, rootkit checks (syscall/IDT/creds) | [Kernel symbols required](#linuxmacos-memory-dumps) |
+| **macOS** | 20 | Processes, kexts, network, TrustedBSD, kauth listeners, syscall/sysctl checks | [Kernel symbols required](#linuxmacos-memory-dumps) |
 
 ## Features
 
@@ -101,10 +105,10 @@ vol-analyze memory.raw --os windows \
     -o case-001/ -j 8 \
     --dump-files --dump-registry --extract-strings --json
 
-# Linux dump (LiME format)
+# Linux dump (LiME format) — requires kernel symbols
 vol-analyze memory.lime --os linux --extract-strings --json
 
-# macOS analysis
+# macOS analysis — requires kernel symbols
 vol-analyze memory.raw --os mac -o mac-case/
 
 # CI-friendly — no colors, JSON output
