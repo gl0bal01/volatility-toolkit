@@ -19,7 +19,8 @@ IFS=$'\n\t'
 # ─── Constants ───────────────────────────────────────────────────────────────
 
 readonly VERSION="2.0.0"
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly DEFAULT_MAX_PARALLEL=4
 readonly DEFAULT_OUTPUT_DIR="volatility_output"
 
@@ -43,12 +44,12 @@ setup_colors() {
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 
-info()    { printf "${BLUE}[*]${NC} %s\n" "$*"; }
-success() { printf "${GREEN}[+]${NC} %s\n" "$*"; }
-warn()    { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
-error()   { printf "${RED}[-]${NC} %s\n" "$*" >&2; }
+info()    { printf '%b[*]%b %s\n' "${BLUE}" "${NC}" "$*"; }
+success() { printf '%b[+]%b %s\n' "${GREEN}" "${NC}" "$*"; }
+warn()    { printf '%b[!]%b %s\n' "${YELLOW}" "${NC}" "$*"; }
+error()   { printf '%b[-]%b %s\n' "${RED}" "${NC}" "$*" >&2; }
 fatal()   { error "$*"; exit 1; }
-header()  { printf "\n${BOLD}${MAGENTA}══ %s${NC}\n\n" "$*"; }
+header()  { printf '\n%b══ %s%b\n\n' "${BOLD}${MAGENTA}" "$*" "${NC}"; }
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
 
@@ -260,8 +261,8 @@ compute_checksums() {
 
     rm -f "$md5_tmp" "$sha256_tmp"
 
-    [[ -n "$CHECKSUM_MD5" ]]    && success "MD5:    ${CHECKSUM_MD5}" || true
-    [[ -n "$CHECKSUM_SHA256" ]] && success "SHA256: ${CHECKSUM_SHA256}" || true
+    if [[ -n "$CHECKSUM_MD5" ]];    then success "MD5:    ${CHECKSUM_MD5}";    fi
+    if [[ -n "$CHECKSUM_SHA256" ]]; then success "SHA256: ${CHECKSUM_SHA256}"; fi
 }
 
 # ─── Plugin Definitions ─────────────────────────────────────────────────────
@@ -425,12 +426,12 @@ run_all_plugins() {
 
             if (( exit_code == 0 )); then
                 (( succeeded++ ))
-                printf "  ${GREEN}✓${NC} ${DIM}[%2d/%d]${NC} %-42s ${DIM}%ss${NC}\n" \
-                    "$completed" "$total" "${batch_names[$j]}" "$duration"
+                printf '  %b✓%b %b[%2d/%d]%b %-42s %b%ss%b\n' \
+                    "${GREEN}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "${batch_names[$j]}" "${DIM}" "$duration" "${NC}"
             else
                 (( failed++ ))
-                printf "  ${YELLOW}!${NC} ${DIM}[%2d/%d]${NC} %-42s ${DIM}%ss (see .err)${NC}\n" \
-                    "$completed" "$total" "${batch_names[$j]}" "$duration"
+                printf '  %b!%b %b[%2d/%d]%b %-42s %b%ss (see .err)%b\n' \
+                    "${YELLOW}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "${batch_names[$j]}" "${DIM}" "$duration" "${NC}"
             fi
         done
     done
@@ -510,7 +511,7 @@ extract_strings() {
     for category in ipv4 urls emails domains "${path_categories[@]}"; do
         local count=0
         [[ -f "${strings_dir}/${category}.txt" ]] && count=$(wc -l < "${strings_dir}/${category}.txt")
-        printf "  ${CYAN}%-20s${NC} %'d unique entries\n" "$category" "$count"
+        printf '  %b%-20s%b %d unique entries\n' "${CYAN}" "$category" "${NC}" "$count"
     done
 
     echo ""
@@ -698,7 +699,7 @@ generate_json_report() {
 # ─── Banner ──────────────────────────────────────────────────────────────────
 
 print_banner() {
-    printf "${BOLD}${CYAN}"
+    printf '%b' "${BOLD}${CYAN}"
     cat <<'BANNER'
 
   __     __   _  _____           _ _    _ _
@@ -708,9 +709,9 @@ print_banner() {
      \_/ \___/|_|  |_|\___/ \___/|_|_|\_\_|\__|
 
 BANNER
-    printf "${NC}"
-    printf "  ${DIM}Memory Forensics v${VERSION} — ${TARGET_OS}${NC}\n"
-    printf "  ${DIM}https://github.com/gl0bal01/volatility-toolkit${NC}\n\n"
+    printf '%b' "${NC}"
+    printf '  %bMemory Forensics v%s — %s%b\n' "${DIM}" "${VERSION}" "${TARGET_OS}" "${NC}"
+    printf '  %bhttps://github.com/gl0bal01/volatility-toolkit%b\n\n' "${DIM}" "${NC}"
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -763,16 +764,16 @@ main() {
     if [[ "$INTERACTIVE" == true ]]; then
         echo ""
         if [[ "$EXTRACT_STRINGS" != true ]]; then
-            read -rp "$(printf "${YELLOW}[?]${NC} Extract IOC strings? (y/N) ")" answer
+            read -rp "$(printf '%b[?]%b Extract IOC strings? (y/N) ' "${YELLOW}" "${NC}")" answer
             [[ "${answer,,}" == "y" ]] && extract_strings
         fi
         if [[ "$TARGET_OS" == "windows" ]]; then
             if [[ "$DUMP_FILES" != true ]]; then
-                read -rp "$(printf "${YELLOW}[?]${NC} Dump files from memory? (y/N) ")" answer
+                read -rp "$(printf '%b[?]%b Dump files from memory? (y/N) ' "${YELLOW}" "${NC}")" answer
                 [[ "${answer,,}" == "y" ]] && dump_files
             fi
             if [[ "$DUMP_REGISTRY" != true ]]; then
-                read -rp "$(printf "${YELLOW}[?]${NC} Dump registry hives? (y/N) ")" answer
+                read -rp "$(printf '%b[?]%b Dump registry hives? (y/N) ' "${YELLOW}" "${NC}")" answer
                 [[ "${answer,,}" == "y" ]] && dump_registry
             fi
         fi
