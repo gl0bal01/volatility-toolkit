@@ -1,0 +1,18 @@
+# Analysis output
+volatility_output/
+*.txt.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Temp
+*.bak
+*.log
