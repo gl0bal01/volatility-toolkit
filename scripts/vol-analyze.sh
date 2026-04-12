@@ -18,7 +18,7 @@ IFS=$'\n\t'
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_NAME
 readonly DEFAULT_MAX_PARALLEL=4
@@ -139,8 +139,17 @@ validate() {
     [[ -z "$MEMORY_DUMP" ]] && fatal "No memory dump specified. Usage: ${SCRIPT_NAME} <memory_dump> [options]"
     [[ -f "$MEMORY_DUMP" ]]  || fatal "File not found: ${MEMORY_DUMP}"
     [[ -r "$MEMORY_DUMP" ]]  || fatal "File not readable: ${MEMORY_DUMP}"
+    [[ -L "$MEMORY_DUMP" ]]  && fatal "Refusing to follow symlink: ${MEMORY_DUMP} — pass the real path"
 
     command -v "$VOL" &>/dev/null || fatal "Volatility 3 (${VOL}) not found in PATH. Install: https://github.com/volatilityfoundation/volatility3"
+
+    # Validate that VOL resolves to an expected binary name
+    local vol_base
+    vol_base=$(basename "$(command -v "$VOL")")
+    case "$vol_base" in
+        vol|vol3|volatility3|python|python3) ;;
+        *) fatal "VOL3_CMD resolves to unexpected binary '${vol_base}' — expected vol, vol3, volatility3, or python/python3" ;;
+    esac
 
     case "$TARGET_OS" in
         windows|linux|mac|auto) ;;
@@ -151,7 +160,7 @@ validate() {
     local resolved_output
     resolved_output=$(cd "$(dirname "$OUTPUT_DIR")" 2>/dev/null && pwd)/$(basename "$OUTPUT_DIR") || resolved_output="$OUTPUT_DIR"
     case "$resolved_output" in
-        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*)
+        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/var|/var/*|/lib|/lib/*|/run|/run/*)
             fatal "Refusing to use system directory as output: ${OUTPUT_DIR}" ;;
     esac
 
@@ -198,7 +207,9 @@ cleanup() {
         echo "$pids" | xargs kill 2>/dev/null || true
         wait 2>/dev/null || true
     fi
-    rm -rf "${OUTPUT_DIR:?}/.timing" 2>/dev/null || true
+    if [[ -n "${OUTPUT_DIR:-}" ]]; then
+        rm -rf "${OUTPUT_DIR:?}/.timing" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -634,11 +645,18 @@ generate_json_report() {
     file_size=$(stat -c%s "$MEMORY_DUMP" 2>/dev/null || stat -f%z "$MEMORY_DUMP" 2>/dev/null || echo "0")
 
     json_escape() {
+        if command -v jq &>/dev/null; then
+            printf '%s' "$1" | jq -Rs '.'  | sed 's/^"//;s/"$//'
+            return
+        fi
         local s="$1"
         s="${s//\\/\\\\}"
         s="${s//\"/\\\"}"
         s="${s//$'\n'/\\n}"
+        s="${s//$'\r'/\\r}"
         s="${s//$'\t'/\\t}"
+        s="${s//$'\b'/\\b}"
+        s="${s//$'\f'/\\f}"
         printf '%s' "$s"
     }
 
@@ -725,6 +743,7 @@ main() {
     validate
 
     mkdir -p "$OUTPUT_DIR"
+    chmod 700 "$OUTPUT_DIR"
 
     # ── OS detection ──
     if [[ "$TARGET_OS" == "auto" ]]; then

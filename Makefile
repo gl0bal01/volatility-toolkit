@@ -5,7 +5,7 @@ BASHCOMPDIR ?= /etc/bash_completion.d
 SCRIPT       = scripts/vol-analyze.sh
 BIN_NAME     = vol-analyze
 
-.PHONY: install uninstall lint check help
+.PHONY: install uninstall lint check test help
 
 help: ## Show this help
 	@grep -E '^[a-z].*:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -33,6 +33,9 @@ lint: ## Run shellcheck on the script
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not found — install: https://github.com/koalaman/shellcheck"; exit 1; }
 	shellcheck $(SCRIPT)
 	@echo "Lint passed"
+
+test: ## Run unit tests
+	@bash tests/test_vol_analyze.sh
 
 check: ## Verify runtime dependencies
 	@echo "Checking dependencies..."
