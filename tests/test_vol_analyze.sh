@@ -156,9 +156,12 @@ test_validation() {
     assert_contains "rejects symlink input" "symlink" "$sym_output"
     rm -rf "$tmpdir"
 
-    # Invalid --os value
-    local tmpfile
-    tmpfile=$(mktemp --suffix=.raw)
+    # Invalid --os value. macOS mktemp doesn't accept --suffix, so create a
+    # temp dir and stage a .raw file inside it.
+    local tmpfile_dir tmpfile
+    tmpfile_dir=$(mktemp -d)
+    tmpfile="${tmpfile_dir}/sample.raw"
+    : > "$tmpfile"
     local os_output
     os_output=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --os bogus 2>&1) || true
     assert_contains "rejects invalid --os" "Invalid --os" "$os_output"
@@ -177,7 +180,7 @@ test_validation() {
     procdir_output=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o /proc/bad 2>&1) || true
     assert_contains "rejects /proc as output" "system directory" "$procdir_output"
 
-    rm -f "$tmpfile"
+    rm -rf "$tmpfile_dir"
     rm -rf "$fake_bin"
 }
 
