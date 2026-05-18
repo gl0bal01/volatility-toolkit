@@ -10,6 +10,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPT="${PROJECT_DIR}/scripts/vol-analyze.sh"
 
+# Disable -eu while sourcing so unset script-runtime globals don't abort
+# the test harness. The BASH_SOURCE guard prevents main() from running.
+set +eu
+# shellcheck source=../scripts/vol-analyze.sh
+source "$SCRIPT"
+set -eu
+
 PASS=0
 FAIL=0
 TESTS_RUN=0
@@ -49,48 +56,10 @@ assert_exit_code() {
     fi
 }
 
-# Source only the functions we need by extracting them
-# We create a minimal harness that defines the functions without running main()
+# Re-source would hit `readonly` redeclaration errors; we source once at
+# top-level and just reset colors here.
 setup_harness() {
-    # Provide color stubs
-    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' BOLD='' DIM='' NC=''
-
-    # Source safe_name
-    safe_name() {
-        local name="$1"
-        name="${name#windows.}"
-        name="${name#linux.}"
-        name="${name#mac.}"
-        name="${name//./_}"
-        echo "$name"
-    }
-
-    # Source resolve_path
-    resolve_path() {
-        if command -v realpath &>/dev/null; then
-            realpath "$1"
-        elif command -v readlink &>/dev/null && readlink -f "$1" &>/dev/null; then
-            readlink -f "$1"
-        else
-            local dir base
-            dir=$(cd "$(dirname "$1")" && pwd) || dir="$(dirname "$1")"
-            base=$(basename "$1")
-            echo "${dir}/${base}"
-        fi
-    }
-
-    # Source json_escape (manual version, no jq)
-    json_escape() {
-        local s="$1"
-        s="${s//\\/\\\\}"
-        s="${s//\"/\\\"}"
-        s="${s//$'\n'/\\n}"
-        s="${s//$'\r'/\\r}"
-        s="${s//$'\t'/\\t}"
-        s="${s//$'\b'/\\b}"
-        s="${s//$'\f'/\\f}"
-        printf '%s' "$s"
-    }
+    NO_COLOR=1 setup_colors
 }
 
 # ─── Tests: safe_name ─────────────────────────────────────────────────────────
@@ -236,11 +205,12 @@ test_script_quality() {
     # Bash syntax check
     assert_exit_code "bash -n syntax check passes" 0 bash -n "$SCRIPT"
 
-    # ShellCheck (if available)
+    # ShellCheck — required dev dependency. Skipping it produces a false
+    # sense of security; fail loudly if missing.
     if command -v shellcheck &>/dev/null; then
         assert_exit_code "shellcheck passes" 0 shellcheck "$SCRIPT"
     else
-        pass "shellcheck not installed — skipping (tested in CI)"
+        fail "shellcheck not installed — required dev dependency (install: https://github.com/koalaman/shellcheck)"
     fi
 }
 

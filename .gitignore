@@ -16,3 +16,7 @@ Thumbs.db
 # Temp
 *.bak
 *.log
+
+# AI tool artifacts
+.claude/
+.omc/

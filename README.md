@@ -12,14 +12,6 @@
 >
 > **Note:** Windows dumps work out of the box. Linux and macOS analysis requires [kernel symbols](#linuxmacos-memory-dumps) to be installed first.
 
-## Demo
-
-<!-- Replace this with your asciinema recording or GIF -->
-<!-- To record: asciinema rec demo.cast -c './scripts/vol-analyze.sh memory.raw --os windows --extract-strings --json' -->
-<!-- To embed: [![asciicast](https://asciinema.org/a/YOUR_ID.svg)](https://asciinema.org/a/YOUR_ID) -->
-
-> **TODO:** Record a demo with a real memory dump, then replace this section.
-
 ## Quick Start
 
 ```bash

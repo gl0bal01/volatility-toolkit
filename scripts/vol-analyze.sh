@@ -189,11 +189,76 @@ resolve_path() {
     elif command -v readlink &>/dev/null && readlink -f "$1" &>/dev/null; then
         readlink -f "$1"
     else
-        local dir base
-        dir=$(cd "$(dirname "$1")" && pwd) || dir="$(dirname "$1")"
+        local dir base abs_dir
+        dir=$(dirname "$1")
         base=$(basename "$1")
-        echo "${dir}/${base}"
+        abs_dir=$(cd "$dir" 2>/dev/null && pwd) || abs_dir=""
+        if [[ -z "$abs_dir" ]]; then
+            [[ "$dir" != /* ]] && dir="$(pwd)/$dir"
+            abs_dir="$dir"
+        fi
+        printf '%s/%s\n' "$abs_dir" "$base"
     fi
+}
+
+# stat(1) size flag varies between GNU (-c%s) and BSD/macOS (-f%z).
+file_size_bytes() {
+    stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo "0"
+}
+
+# Portable timeout wrapper. Returns 124 on timeout (GNU coreutils convention).
+# If no timeout binary available, runs the command without a timer.
+run_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout &>/dev/null; then
+        timeout "$secs" "$@"
+    elif command -v gtimeout &>/dev/null; then
+        gtimeout "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
+# Human-readable byte size (portable: avoids GNU numfmt dependency on macOS).
+human_size() {
+    local bytes="$1"
+    if ! [[ "$bytes" =~ ^[0-9]+$ ]]; then
+        echo "$bytes"
+        return
+    fi
+    if command -v numfmt &>/dev/null; then
+        numfmt --to=iec "$bytes" 2>/dev/null && return
+    fi
+    local -a units=(B K M G T P)
+    local idx=0 val=$bytes
+    while (( val >= 1024 && idx < ${#units[@]} - 1 )); do
+        val=$(( val / 1024 ))
+        (( idx++ ))
+    done
+    printf '%d%s\n' "$val" "${units[$idx]}"
+}
+
+# JSON RFC 8259 §7 string escaper.
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\b'/\\b}"
+    s="${s//$'\f'/\\f}"
+    # Escape remaining U+0000..U+001F control characters as \uXXXX
+    local out="" ch code i len="${#s}"
+    for (( i=0; i<len; i++ )); do
+        ch="${s:i:1}"
+        printf -v code '%d' "'$ch"
+        if (( code < 32 )); then
+            printf -v ch '\\u%04x' "$code"
+        fi
+        out+="$ch"
+    done
+    printf '%s' "$out"
 }
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
@@ -204,7 +269,8 @@ cleanup() {
     if [[ -n "$pids" ]]; then
         printf "\n"
         warn "Interrupted — killing background jobs..."
-        echo "$pids" | xargs kill 2>/dev/null || true
+        # shellcheck disable=SC2086 # word-split is intentional
+        kill $pids 2>/dev/null || true
         wait 2>/dev/null || true
     fi
     if [[ -n "${OUTPUT_DIR:-}" ]]; then
@@ -215,25 +281,27 @@ trap cleanup EXIT INT TERM
 
 # ─── OS Detection ────────────────────────────────────────────────────────────
 
-detect_os() {
-    info "Auto-detecting OS from memory dump..."
+readonly DETECT_TIMEOUT_SECS="${VOL_DETECT_TIMEOUT:-60}"
 
-    # Try each OS in order (most common first)
-    if "$VOL" -f "$MEMORY_DUMP" windows.info &>/dev/null; then
-        success "Detected: ${BOLD}Windows${NC}"
-        echo "windows"
-        return
-    fi
-    if "$VOL" -f "$MEMORY_DUMP" linux.pslist &>/dev/null; then
-        success "Detected: ${BOLD}Linux${NC}"
-        echo "linux"
-        return
-    fi
-    if "$VOL" -f "$MEMORY_DUMP" mac.pslist &>/dev/null; then
-        success "Detected: ${BOLD}macOS${NC}"
-        echo "mac"
-        return
-    fi
+# stdout returns the detected OS name; everything else goes to stderr so
+# `$(detect_os)` is not polluted by status messages.
+detect_os() {
+    info "Auto-detecting OS from memory dump (${DETECT_TIMEOUT_SECS}s timeout per probe)..." >&2
+
+    local probe os_name rc
+    for probe in windows.info linux.pslist mac.pslist; do
+        os_name="${probe%%.*}"
+        info "  Probing as ${os_name}..." >&2
+        rc=0
+        run_with_timeout "$DETECT_TIMEOUT_SECS" "$VOL" -f "$MEMORY_DUMP" "$probe" &>/dev/null || rc=$?
+        if (( rc == 0 )); then
+            success "Detected: ${BOLD}${os_name}${NC}" >&2
+            echo "$os_name"
+            return
+        elif (( rc == 124 )); then
+            warn "  Probe for ${os_name} timed out after ${DETECT_TIMEOUT_SECS}s" >&2
+        fi
+    done
 
     echo ""
 }
@@ -397,20 +465,19 @@ run_all_plugins() {
 
     mkdir -p "${OUTPUT_DIR}/.timing"
 
-    local i=0
-    while (( i < total )); do
-        local -a batch_pids=()
-        local -a batch_names=()
-        local -a batch_safe=()
-        local batch_end=$(( i + MAX_PARALLEL ))
-        (( batch_end > total )) && batch_end=$total
+    # `wait -n` requires bash 4.3+. The `${arr[@]+"${arr[@]}"}` idiom on
+    # `survivors` is the bash-`set -u`-safe way to expand a possibly-empty
+    # array.
+    declare -A pid_plugin
+    local -a active_pids=()
+    local i=0 plugin sname output_file err_file pid
 
-        while (( i < batch_end )); do
-            local plugin="${PLUGINS[$i]}"
-            local sname
+    while (( i < total )) || (( ${#active_pids[@]} > 0 )); do
+        while (( ${#active_pids[@]} < MAX_PARALLEL )) && (( i < total )); do
+            plugin="${PLUGINS[$i]}"
             sname=$(safe_name "$plugin")
-            local output_file="${OUTPUT_DIR}/${sname}.txt"
-            local err_file="${OUTPUT_DIR}/${sname}.err"
+            output_file="${OUTPUT_DIR}/${sname}.txt"
+            err_file="${OUTPUT_DIR}/${sname}.err"
 
             (
                 _t_start=$(date +%s)
@@ -418,33 +485,42 @@ run_all_plugins() {
                 _t_end=$(date +%s)
                 echo $(( _t_end - _t_start )) > "${OUTPUT_DIR}/.timing/${sname}"
             ) &
-
-            batch_pids+=($!)
-            batch_names+=("$plugin")
-            batch_safe+=("$sname")
+            pid=$!
+            pid_plugin[$pid]="$plugin"
+            active_pids+=("$pid")
             (( i++ ))
         done
 
-        for j in "${!batch_pids[@]}"; do
+        wait -n 2>/dev/null || true
+
+        local -a survivors=()
+        local p
+        for p in "${active_pids[@]}"; do
+            if kill -0 "$p" 2>/dev/null; then
+                survivors+=("$p")
+                continue
+            fi
             local exit_code=0
-            wait "${batch_pids[$j]}" 2>/dev/null || exit_code=$?
-
+            wait "$p" 2>/dev/null || exit_code=$?
+            local pname="${pid_plugin[$p]}"
+            local psname
+            psname=$(safe_name "$pname")
             (( completed++ ))
-
             local duration="?"
-            local tfile="${OUTPUT_DIR}/.timing/${batch_safe[$j]}"
+            local tfile="${OUTPUT_DIR}/.timing/${psname}"
             [[ -f "$tfile" ]] && duration=$(cat "$tfile")
-
             if (( exit_code == 0 )); then
                 (( succeeded++ ))
                 printf '  %b✓%b %b[%2d/%d]%b %-42s %b%ss%b\n' \
-                    "${GREEN}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "${batch_names[$j]}" "${DIM}" "$duration" "${NC}"
+                    "${GREEN}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "$pname" "${DIM}" "$duration" "${NC}"
             else
                 (( failed++ ))
                 printf '  %b!%b %b[%2d/%d]%b %-42s %b%ss (see .err)%b\n' \
-                    "${YELLOW}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "${batch_names[$j]}" "${DIM}" "$duration" "${NC}"
+                    "${YELLOW}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "$pname" "${DIM}" "$duration" "${NC}"
             fi
+            unset 'pid_plugin[$p]'
         done
+        active_pids=(${survivors[@]+"${survivors[@]}"})
     done
 
     local end_time
@@ -496,22 +572,21 @@ extract_strings() {
     grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' "${strings_dir}/all.txt" \
         | sort -u > "${strings_dir}/emails.txt" 2>/dev/null || true
 
-    # Domains (heuristic — sorted by frequency)
-    grep -oE '\b[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.(com|net|org|io|ru|cn|de|uk|info|biz|xyz|top|cc|su|tk)\b' \
+    # RFC 1035 label rules; ext blocklist filters noise like "kernel.dll".
+    grep -oE '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}\b' \
         "${strings_dir}/all.txt" \
+        | grep -ivE '\.(exe|dll|sys|drv|ocx|cpl|scr|com|bat|cmd|ps1|vbs|js|jse|wsf|wsh|hta|msi|lnk|inf|reg|txt|log|tmp|dat|bin|ini|cfg|conf|cnf|xml|json|yaml|yml|html|htm|css|jpg|jpeg|png|gif|bmp|ico|svg|webp|pdf|doc|docx|xls|xlsx|ppt|pptx|csv|rtf|odt|ods|odp|zip|tar|gz|bz2|xz|7z|rar|iso|deb|rpm|pkg|dmg|app|so|dylib|jar|class|py|pyc|pyd|c|cpp|h|hpp|o|a|md|rst)$' \
         | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
-
-    # ── OS-specific patterns ──
 
     local path_categories=()
     case "$TARGET_OS" in
         windows)
-            grep -oE '[A-Z]:\\[^[:space:]"'\''<>:*?|]+' "${strings_dir}/all.txt" \
+            grep -oE '[A-Za-z]:\\[^[:space:]"'\''<>:*?|]+' "${strings_dir}/all.txt" \
                 | sort -u > "${strings_dir}/windows_paths.txt" 2>/dev/null || true
             path_categories=(windows_paths)
             ;;
         linux|mac)
-            grep -oE '/(etc|home|tmp|var|opt|usr|root|proc|dev|Library|Applications)/[^[:space:]"'\''<>]+' \
+            grep -oE '/(bin|sbin|lib|lib64|etc|home|tmp|var|opt|usr|root|proc|dev|sys|boot|run|mnt|media|srv|Library|Applications|System|Users|Volumes)/[^[:space:]"'\''<>]+' \
                 "${strings_dir}/all.txt" \
                 | sort -u > "${strings_dir}/unix_paths.txt" 2>/dev/null || true
             path_categories=(unix_paths)
@@ -584,7 +659,7 @@ generate_text_report() {
     local analysis_date
     analysis_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local file_size
-    file_size=$(stat -c%s "$MEMORY_DUMP" 2>/dev/null || stat -f%z "$MEMORY_DUMP" 2>/dev/null || echo "unknown")
+    file_size=$(file_size_bytes "$MEMORY_DUMP")
 
     cat > "$report" <<-REPORT
 	═══════════════════════════════════════════════════════════════
@@ -642,23 +717,7 @@ generate_json_report() {
     local analysis_date
     analysis_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local file_size
-    file_size=$(stat -c%s "$MEMORY_DUMP" 2>/dev/null || stat -f%z "$MEMORY_DUMP" 2>/dev/null || echo "0")
-
-    json_escape() {
-        if command -v jq &>/dev/null; then
-            printf '%s' "$1" | jq -Rs '.'  | sed 's/^"//;s/"$//'
-            return
-        fi
-        local s="$1"
-        s="${s//\\/\\\\}"
-        s="${s//\"/\\\"}"
-        s="${s//$'\n'/\\n}"
-        s="${s//$'\r'/\\r}"
-        s="${s//$'\t'/\\t}"
-        s="${s//$'\b'/\\b}"
-        s="${s//$'\f'/\\f}"
-        printf '%s' "$s"
-    }
+    file_size=$(file_size_bytes "$MEMORY_DUMP")
 
     local dump_path
     dump_path=$(resolve_path "$MEMORY_DUMP")
@@ -741,6 +800,7 @@ main() {
 
     parse_args "$@"
     validate
+    readonly VOL
 
     mkdir -p "$OUTPUT_DIR"
     chmod 700 "$OUTPUT_DIR"
@@ -759,12 +819,11 @@ main() {
 
     print_banner
 
-    local file_size
-    file_size=$(stat -c%s "$MEMORY_DUMP" 2>/dev/null || stat -f%z "$MEMORY_DUMP" 2>/dev/null || echo "unknown")
-    local human_size
-    human_size=$(numfmt --to=iec "$file_size" 2>/dev/null || echo "${file_size} bytes") || true
+    local file_size human_size_str
+    file_size=$(file_size_bytes "$MEMORY_DUMP")
+    human_size_str=$(human_size "$file_size")
 
-    info "Memory dump: ${BOLD}${MEMORY_DUMP}${NC} (${human_size})"
+    info "Memory dump: ${BOLD}${MEMORY_DUMP}${NC} (${human_size_str})"
     info "Output dir:  ${BOLD}${OUTPUT_DIR}${NC}"
     info "Plugins:     ${#PLUGINS[@]} (${TARGET_OS}), ${MAX_PARALLEL} parallel"
 
@@ -807,4 +866,7 @@ main() {
     success "Analysis complete — results in ${BOLD}${OUTPUT_DIR}/${NC}"
 }
 
-main "$@"
+# Allow sourcing without auto-running main (used by the test harness).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

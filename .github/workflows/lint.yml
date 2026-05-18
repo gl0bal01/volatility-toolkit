@@ -7,13 +7,13 @@ on:
     branches: [main]
 
 jobs:
-  shellcheck:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install ShellCheck
-        run: sudo apt-get install -y shellcheck
+      - name: Install ShellCheck and Zsh
+        run: sudo apt-get install -y shellcheck zsh
 
       - name: Verify bash syntax
         run: bash -n scripts/vol-analyze.sh
@@ -21,5 +21,31 @@ jobs:
       - name: Run ShellCheck
         run: shellcheck scripts/vol-analyze.sh
 
-      - name: Verify completions syntax
+      - name: Verify bash completions syntax
         run: bash -n completions/vol-analyze.bash
+
+      - name: Verify zsh completions syntax
+        run: zsh -n completions/vol-analyze.zsh
+
+      - name: Check runtime dependency probes
+        run: make check
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install ShellCheck (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y shellcheck
+
+      - name: Install ShellCheck (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install shellcheck
+
+      - name: Run unit tests
+        run: make test

@@ -19,7 +19,8 @@ _vol_analyze() {
             return 0
             ;;
         -j|--jobs)
-            COMPREPLY=( $(compgen -W "1 2 4 8 16" -- "$cur") )
+            # Free-form integer; offer a sane range as hints
+            COMPREPLY=( $(compgen -W "$(seq 1 32)" -- "$cur") )
             return 0
             ;;
     esac
