@@ -156,9 +156,15 @@ validate() {
         *) fatal "Invalid --os value: ${TARGET_OS} (must be: windows, linux, mac, auto)" ;;
     esac
 
-    # Reject dangerous output paths
-    local resolved_output
-    resolved_output=$(cd "$(dirname "$OUTPUT_DIR")" 2>/dev/null && pwd)/$(basename "$OUTPUT_DIR") || resolved_output="$OUTPUT_DIR"
+    # Reject dangerous output paths. If the parent directory exists we use
+    # the resolved absolute form; otherwise (e.g. /proc on macOS) we fall
+    # back to the literal argument so the blacklist still matches.
+    local resolved_output abs_parent
+    if abs_parent=$(cd "$(dirname "$OUTPUT_DIR")" 2>/dev/null && pwd); then
+        resolved_output="${abs_parent}/$(basename "$OUTPUT_DIR")"
+    else
+        resolved_output="$OUTPUT_DIR"
+    fi
     case "$resolved_output" in
         /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/var|/var/*|/lib|/lib/*|/run|/run/*)
             fatal "Refusing to use system directory as output: ${OUTPUT_DIR}" ;;
