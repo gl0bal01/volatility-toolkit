@@ -18,7 +18,7 @@ IFS=$'\n\t'
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-readonly VERSION="2.1.0"
+readonly VERSION="2.1.1"
 SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_NAME
 readonly DEFAULT_MAX_PARALLEL=4
