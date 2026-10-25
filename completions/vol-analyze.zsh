@@ -1,6 +1,6 @@
 #compdef vol-analyze vol-analyze.sh
 # Zsh completion for vol-analyze
-# Copy to a directory in your $fpath (e.g. ~/.zsh/completions/) as _vol-analyze
+# Installed by `make install`, or copy into a directory in your $fpath as _vol-analyze
 
 _vol-analyze() {
     local -a opts
@@ -22,7 +22,7 @@ _vol-analyze() {
         '--version[Show version]'
     )
 
-    _arguments -s $opts '*:memory dump:_files -g "*.{raw,vmem,dmp,mem,bin,img,lime}"'
+    _arguments -s $opts '*:memory dump:_files -g "*.(raw|vmem|dmp|mem|bin|img|lime)"'
 }
 
 _vol-analyze "$@"
