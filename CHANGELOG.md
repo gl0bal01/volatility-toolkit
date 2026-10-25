@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-10-25
+
+Every analysis run since 2.0.0 aborted when the first plugin launched; this release fixes that and was validated end to end on real dumps (MemLabs Lab 0 CTF image, Volatility 3 test-data Windows 10 and Debian 7 samples).
+
+### Breaking
+- Volatility 3 2.26.2+ is required (current plugin names). Output files `hashdump.txt` / `lsadump.txt` are now `registry_hashdump.txt` / `registry_lsadump.txt`.
+- An existing output directory that is group/world-writable or not owned by you (including `-o /tmp`) is refused.
+- Exit status is 1 when no plugin succeeds.
+- Text report status column: `OK` / `WARN` → `SUCCESS` / `WARNING` / `FAILED` / `MISSING`.
+- `--dump-registry` writes its index to `registry_dump_index.txt`; `registry_hivelist.txt` is the plugin output again.
 
 ### Added
 - Windows: `windows.cmdscan` and `windows.consoles` (console command history and output) — 32 Windows plugins.
