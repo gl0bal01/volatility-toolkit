@@ -282,24 +282,26 @@ vol -f memory.raw windows.registry.userassist
 
 ## Credential Extraction
 
-### windows.hashdump
+### windows.registry.hashdump
 
 Extract NTLM password hashes from the SAM registry hive.
 
+> Requires pycryptodome: install with `pip install "volatility3[full]"`. Without it, `hashdump`, `lsadump` and `cachedump` are not listed.
+
 ```bash
-vol -f memory.raw windows.hashdump
+vol -f memory.raw windows.registry.hashdump
 ```
 
 **Output format:** `username:RID:LM_hash:NTLM_hash:::`
 
 Use the hashes with tools like `hashcat` or `john` for cracking, or check against rainbow tables.
 
-### windows.lsadump
+### windows.registry.lsadump
 
 Dump LSA secrets — may contain cached domain credentials, service account passwords, and other sensitive data.
 
 ```bash
-vol -f memory.raw windows.lsadump
+vol -f memory.raw windows.registry.lsadump
 ```
 
 **Look for:** Cleartext passwords, cached credentials, VPN passwords, auto-logon credentials.
@@ -308,15 +310,15 @@ vol -f memory.raw windows.lsadump
 
 ## Malware Detection
 
-### windows.malfind
+### windows.malware.malfind
 
 Find potentially injected or hidden code in process memory. Detects memory regions that are executable, private, and not backed by a file on disk.
 
 ```bash
-vol -f memory.raw windows.malfind
+vol -f memory.raw windows.malware.malfind
 
 # Dump suspicious regions for further analysis
-vol -o malfind_dumps/ -f memory.raw windows.malfind
+vol -o malfind_dumps/ -f memory.raw windows.malware.malfind
 ```
 
 **Look for:** `MZ` headers (PE files injected into memory), shellcode patterns, regions tagged `VadS` with `PAGE_EXECUTE_READWRITE` protection. Not every hit is malicious — verify with static analysis.
@@ -491,17 +493,14 @@ vol -f memory.raw timeliner > timeline.txt
 
 ### yarascan
 
-Scan process or kernel memory with YARA rules.
+Scan memory with YARA rules. `yarascan` scans kernel memory; use `windows.vadyarascan` (or `linux.vmayarascan`) for process memory.
 
 ```bash
 # Scan with a YARA rules file
 vol -f memory.raw yarascan --yara-file rules.yar
 
 # Scan a specific process
-vol -f memory.raw yarascan --yara-file rules.yar --pid 1234
-
-# Scan kernel memory
-vol -f memory.raw yarascan --yara-file rules.yar --kernel
+vol -f memory.raw windows.vadyarascan --yara-file rules.yar --pid 1234
 ```
 
 ---

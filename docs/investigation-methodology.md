@@ -74,7 +74,7 @@ vol -f memory.raw windows.info
 
 If this succeeds, Volatility can parse the dump. Note the OS version, architecture, and system time from the output — you'll reference these throughout the investigation.
 
-**If it fails:** The dump may be corrupt, truncated, or in a format Volatility can't parse. Try `imageinfo` in Volatility 2.
+**If it fails:** The dump may be corrupt, truncated, or in a format Volatility can't parse. Try `vol -f memory.raw banners` to check for a recognizable OS banner, or verify the acquisition tool and file integrity.
 
 ---
 
@@ -171,7 +171,7 @@ vol -f memory.raw windows.handles --pid <PID>
 vol -f memory.raw windows.privileges | grep "<PID>"
 
 # 6. Is there injected code?
-vol -f memory.raw windows.malfind | grep -A20 "<PID>"
+vol -f memory.raw windows.malware.malfind | grep -A20 "<PID>"
 
 # 7. Dump its memory for offline analysis
 vol -o dump/ -f memory.raw windows.memmap.Memmap --pid <PID> --dump
@@ -241,7 +241,7 @@ vol -f memory.raw windows.callbacks
 | File paths | `cmdline`, `dlllist`, `filescan`, `svcscan` |
 | Registry keys | `printkey`, `userassist`, `svcscan` |
 | Mutex names | `mutantscan`, `handles` |
-| User accounts | `hashdump`, `getsids` |
+| User accounts | `registry.hashdump`, `getsids` |
 | Service names | `svcscan` |
 | Strings/patterns | Process memory dumps, YARA matches |
 

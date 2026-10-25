@@ -74,12 +74,12 @@ vol -f memory.lime linux.lsmod
 
 **Look for:** Unknown modules, modules loaded from non-standard paths, rootkit modules (often hide from `lsmod` on a live system but are visible in memory).
 
-### linux.check_modules
+### linux.malware.check_modules
 
 Compare the module list against sysfs. Finds hidden kernel modules.
 
 ```bash
-vol -f memory.lime linux.check_modules
+vol -f memory.lime linux.malware.check_modules
 ```
 
 **Look for:** Any module present in one source but not the other — this indicates a rootkit hiding a kernel module.
@@ -146,12 +146,12 @@ vol -f memory.lime linux.proc.Maps
 
 **Look for:** Executable anonymous mappings (potential shellcode), RWX regions, memory-mapped files from unusual locations.
 
-### linux.malfind
+### linux.malware.malfind
 
 Find potentially injected or suspicious memory regions.
 
 ```bash
-vol -f memory.lime linux.malfind
+vol -f memory.lime linux.malware.malfind
 ```
 
 **Look for:** Executable anonymous memory regions, ELF headers in unexpected locations, regions with `rwx` permissions not backed by a file.
@@ -160,62 +160,62 @@ vol -f memory.lime linux.malfind
 
 ## Rootkit Detection
 
-### linux.check_syscall
+### linux.malware.check_syscall
 
 Verify the system call table for hooks.
 
 ```bash
-vol -f memory.lime linux.check_syscall
+vol -f memory.lime linux.malware.check_syscall
 ```
 
 **Look for:** System call handlers pointing outside the kernel text segment — indicates a syscall table hook (rootkit).
 
-### linux.check_idt
+### linux.malware.check_idt
 
 Check the Interrupt Descriptor Table for hooks.
 
 ```bash
-vol -f memory.lime linux.check_idt
+vol -f memory.lime linux.malware.check_idt
 ```
 
 **Look for:** IDT entries pointing to unexpected addresses.
 
-### linux.check_afinfo
+### linux.malware.check_afinfo
 
 Check network protocol structures for hooks.
 
 ```bash
-vol -f memory.lime linux.check_afinfo
+vol -f memory.lime linux.malware.check_afinfo
 ```
 
 **Look for:** Hooked network protocol handlers — used by rootkits to hide connections from `netstat`.
 
-### linux.check_creds
+### linux.malware.check_creds
 
 Analyze credential structures for anomalies.
 
 ```bash
-vol -f memory.lime linux.check_creds
+vol -f memory.lime linux.malware.check_creds
 ```
 
 **Look for:** Processes with unexpected UID/GID values, processes that gained root credentials.
 
-### linux.tty_check
+### linux.malware.tty_check
 
 Check TTY devices for hooks.
 
 ```bash
-vol -f memory.lime linux.tty_check
+vol -f memory.lime linux.malware.tty_check
 ```
 
 **Look for:** Hooked TTY operations — used by rootkits for keylogging or to hide terminal output.
 
-### linux.keyboard_notifiers
+### linux.malware.keyboard_notifiers
 
 Examine the keyboard notifier chain.
 
 ```bash
-vol -f memory.lime linux.keyboard_notifiers
+vol -f memory.lime linux.malware.keyboard_notifiers
 ```
 
 **Look for:** Unexpected notifiers — rootkit keyloggers register here to capture keystrokes.

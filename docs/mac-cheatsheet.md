@@ -228,14 +228,6 @@ List process kevents (kernel event notifications).
 vol -f memory.raw mac.kevents
 ```
 
-### mac.timecounter
-
-Show timecounter information.
-
-```bash
-vol -f memory.raw mac.timecounter
-```
-
 ---
 
 ## Symbol Requirements

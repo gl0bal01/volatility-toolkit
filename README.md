@@ -27,7 +27,7 @@ chmod +x scripts/vol-analyze.sh
 ./scripts/vol-analyze.sh memory.raw
 ```
 
-> **Prerequisite:** Volatility 3 must be installed and available as `vol` in your PATH. For Linux/macOS memory dumps, you also need matching [kernel symbols](#linuxmacos-memory-dumps).
+> **Prerequisite:** Volatility 3 must be installed and available as `vol` in your PATH — install it with extras (`pipx install "volatility3[full]"`) so credential plugins like `windows.registry.hashdump` load. For Linux/macOS memory dumps, you also need matching [kernel symbols](#linuxmacos-memory-dumps).
 
 ## What It Does
 
@@ -56,11 +56,11 @@ chmod +x scripts/vol-analyze.sh
 | **Parallel execution** | Run up to N plugins simultaneously (`-j 8`) |
 | **Colored output** | Green for success, yellow for warnings, per-plugin timing |
 | **IOC extraction** | Pull IPs, URLs, domains, emails, and file paths from strings |
-| **JSON reports** | Machine-readable summary with per-plugin status |
+| **JSON reports** | Machine-readable summary with per-plugin status, exit code, and duration |
 | **Chain of custody** | MD5 + SHA256 computed before analysis begins |
 | **Non-interactive** | No prompts by default — safe for scripts and CI |
 | **Registry export** | Dump raw hive files for offline analysis (Windows) |
-| **Error isolation** | stderr captured to `.err` files — never mixed into results |
+| **Error isolation** | stderr captured to `.err` files; plugin status comes from vol's exit code |
 
 ## Usage
 
@@ -83,7 +83,8 @@ OPTIONS
 ENVIRONMENT
     VOL3_CMD                    Volatility 3 command (default: vol)
     MAX_PARALLEL                Default parallel jobs (default: 4)
-    NO_COLOR                    Set to disable colors (any value)
+    VOL_DETECT_TIMEOUT          Seconds per OS auto-detection probe (default: 60)
+    NO_COLOR                    Set to disable colors (any non-empty value)
 ```
 
 ### Examples
@@ -147,10 +148,11 @@ Practical, opinionated guides — not just command references.
 Bash and Zsh completions are included — completes flags, `--os` values, and memory dump files.
 
 ```bash
-# Bash — installed automatically by `make install`, or source manually:
+# Both are installed by `make install` (bash-completion and zsh site-functions dirs).
+# Without installing — Bash:
 source completions/vol-analyze.bash
 
-# Zsh — copy to your fpath:
+# Zsh — copy to a directory in your fpath:
 cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 ```
 
@@ -164,9 +166,10 @@ cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 
 ## Requirements
 
-- [Volatility 3](https://github.com/volatilityfoundation/volatility3) — `vol` in PATH (or set `VOL3_CMD`)
-- Bash 4.0+
-- Standard Unix tools: `strings`, `md5sum`, `sha256sum`, `grep`, `sort`, `uniq`
+- [Volatility 3](https://github.com/volatilityfoundation/volatility3) 2.26.2+ (current plugin names) — `vol` in PATH (or set `VOL3_CMD`); install `volatility3[full]` for the hashdump/lsadump plugins (pycryptodome)
+- Bash 4.0+ (macOS ships 3.2: `brew install bash`)
+- Standard Unix tools: `strings`, `md5sum`/`md5`, `sha256sum`/`shasum`, `grep`, `sort`, `uniq`
+- GNU binutils `strings` for UTF-16LE string extraction on Windows dumps (optional)
 
 ### Linux/macOS Memory Dumps
 

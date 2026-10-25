@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Analysis aborted when the first plugin launched: `(( i++ ))` evaluates to 0, which `set -e` treats as failure. The same pattern in `human_size()` aborted runs on macOS without `numfmt`. Use pre-increment.
+- `-j 08` (zero-padded) made the scheduler spin forever without launching a plugin (octal parse error inside `(( ))`). Values are now parsed as base 10.
+- Ctrl-C / SIGTERM no longer resumes the scheduler loop or leaves orphaned `vol` processes: INT/TERM exit, and `vol` runs as a direct child so cleanup can kill it. OS auto-detection, `strings`, `--dump-files` and `--dump-registry` also stop at once (they used to run to completion, up to 3×60s for detection).
+- Every plugin was reported as WARN/"warning": vol's progress bar went to `.err`. vol now runs with `-q`, and status comes from its exit code.
+- Freed worker slots could idle until a slow plugin finished (`wait -n` ignores jobs that already exited). Replaced with a 1s poll.
+- Colors printed as literal `\033[...]` text in `--help` and status lines on a TTY.
+- `chmod 700` was applied to pre-existing output directories (`-o /tmp` as root stripped the sticky bit). Replaced by `umask 077`: new directories are 700 and every output file is 600, including inside an existing directory (hashdump/lsadump output is no longer group-readable under umask 002).
+- The system-directory blocklist never matched top-level paths: `-o /etc`, `-o /`, `-o /usr`, `-o /tmp/../etc` were accepted (the path was built as `//etc`).
+- A backslash in the dump's file name corrupted the recorded MD5/SHA256 (GNU tools prefix the hash with `\`) and made the JSON invalid. Hashes are computed from stdin and validated as hex.
+- `.com` domains were dropped from `strings/domains.txt` (`com` was in the file-extension blocklist).
+- Interactive prompts aborted the run on EOF instead of treating it as "no".
+- zsh completion file filter used brace syntax, which never matches in a glob; bash completion offered no dump files without `extglob`, and inserted names with spaces unescaped.
+
+### Changed
+- Plugin names updated for Volatility 3 2.26.2+; the old aliases are past their removal dates: `windows.malware.malfind`, `windows.registry.hashdump`, `windows.registry.lsadump`, `linux.malware.*` (malfind, check_syscall, check_idt, check_modules, check_creds, check_afinfo, tty_check, keyboard_notifiers). Output files: `hashdump.txt` → `registry_hashdump.txt`, `lsadump.txt` → `registry_lsadump.txt`; malware plugins keep their old names.
+- Docs updated for current plugin names and options (YARA, hashdump extras, removed `mac.timecounter`, no Volatility 2 `imageinfo`).
+- Report statuses: `SUCCESS` / `WARNING` (exit 0 with stderr) / `FAILED` / `MISSING`. JSON adds per-plugin `exit_code` and `duration_seconds`.
+- Checksums fall back to `md5` / `shasum -a 256` (stock macOS), with a warning if a hash cannot be computed.
+- Exit status is 1 when no plugin succeeds (wrong `--os`, missing kernel symbols); reports are still written.
+- `VOL_DETECT_TIMEOUT` is validated; a warning is shown when no `timeout`/`gtimeout` exists to enforce it.
+- Windows `--extract-strings` also extracts UTF-16LE strings (GNU `strings -e l`).
+- Output-dir blocklist no longer rejects `/var/*` and `/run/*` subtrees (`/var/tmp`, macOS `$TMPDIR`, `/run/media/$USER` evidence drives).
+- `VOL3_CMD` accepts `vol.py`; dropped `python`/`python3`, which could never work without a script argument.
+- `NO_COLOR` follows no-color.org: only a non-empty value disables color.
+- Explicit bash 4.0+ check with a clear error (macOS `/bin/bash` is 3.2).
+- `make install` supports `DESTDIR` and installs bash completion to `$(PREFIX)/share/bash-completion/completions` (replaces the legacy `/etc/bash_completion.d`) and zsh completion to `$(PREFIX)/share/zsh/site-functions`. `make uninstall` removes only the files it installed (no more `rm -rf $(DOCDIR)`).
+- `VOL_DETECT_TIMEOUT` documented in `--help` and the README.
+
+### CI
+- `actions/checkout` bumped to v7.0.1 (pinned SHA); CI steps call `make lint` / `make check` / `make test`; `permissions: contents: read` and job timeouts.
+- `make lint` now covers the tests, the bash completion and `scripts/ci-local.sh`.
+- macOS job installs Homebrew bash (the script needs bash 4+).
+- New `make ci` (`scripts/ci-local.sh`) mirrors CI locally.
+- Tests: the grep-for-`chmod` stub was replaced by end-to-end runs against a fake `vol` (scheduler, exit codes, reports, JSON validity, file modes, top-level `-o` rejection, IOC extraction, auto-detection, SIGTERM during plugins and detection).
+
 ## [2.1.1] - 2026-05-18
 
 ### Added
