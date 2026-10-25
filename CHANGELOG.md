@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Freed worker slots could idle until a slow plugin finished (`wait -n` ignores jobs that already exited). Replaced with a 1s poll.
 - Colors printed as literal `\033[...]` text in `--help` and status lines on a TTY.
 - `chmod 700` was applied to pre-existing output directories (`-o /tmp` as root stripped the sticky bit). Replaced by `umask 077`: new directories are 700 and every output file is 600, including inside an existing directory (hashdump/lsadump output is no longer group-readable under umask 002).
+- An existing output directory that is not owned by the user, or is group/world-writable, is refused: another user could pre-create output files or symlinks and receive the hashdump/lsadump results.
 - The system-directory blocklist never matched top-level paths: `-o /etc`, `-o /`, `-o /usr`, `-o /tmp/../etc` were accepted (the path was built as `//etc`).
 - A backslash in the dump's file name corrupted the recorded MD5/SHA256 (GNU tools prefix the hash with `\`) and made the JSON invalid. Hashes are computed from stdin and validated as hex.
 - `.com` domains were dropped from `strings/domains.txt` (`com` was in the file-extension blocklist).

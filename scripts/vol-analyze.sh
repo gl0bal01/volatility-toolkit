@@ -186,6 +186,18 @@ validate() {
             fatal "Refusing to use system directory as output: ${OUTPUT_DIR}" ;;
     esac
 
+    # An existing output dir must be ours and not group/world-writable:
+    # otherwise another user could pre-create output files (or symlinks) and
+    # receive the hashdump/lsadump results. -H: judge a symlinked dir by its
+    # target, not the link's own lrwxrwxrwx mode.
+    if [[ -d "$OUTPUT_DIR" ]]; then
+        [[ -O "$OUTPUT_DIR" ]] \
+            || fatal "Output directory is not owned by you: ${OUTPUT_DIR} — pick a new directory"
+        if [[ -n "$(find -H "$resolved_output" -prune \( -perm -020 -o -perm -002 \))" ]]; then
+            fatal "Output directory is writable by group/others: ${OUTPUT_DIR} — chmod go-w it or pick a new directory"
+        fi
+    fi
+
     # 10# forces base 10: bare "08" is an invalid octal literal in (( )).
     if ! [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] || (( 10#$MAX_PARALLEL < 1 )); then
         fatal "Invalid --jobs value: ${MAX_PARALLEL} (must be a positive integer)"

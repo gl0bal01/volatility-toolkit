@@ -187,6 +187,14 @@ test_validation() {
             "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "$top" 2>&1)"
     done
 
+    mkdir "${tmpfile_dir}/groupw"
+    chmod 775 "${tmpfile_dir}/groupw"
+    assert_contains "rejects group-writable existing output dir" "writable by group/others" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/groupw" 2>&1)"
+    # /tmp: not ours (root) and world-writable — either check must refuse it.
+    assert_contains "rejects /tmp as output" "Output directory is" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o /tmp 2>&1)"
+
     assert_contains "rejects non-numeric VOL_DETECT_TIMEOUT" "Invalid VOL_DETECT_TIMEOUT" \
         "$(VOL_DETECT_TIMEOUT=abc PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" 2>&1)"
 

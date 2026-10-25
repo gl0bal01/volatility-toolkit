@@ -5,7 +5,9 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
-LOG_DIR="${CI_LOG_DIR:-${TMPDIR:-/tmp}/vol-analyze-ci}"
+# Fresh private dir by default; a fixed /tmp path could be pre-seeded with
+# symlinks by another local user.
+LOG_DIR="${CI_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/vol-analyze-ci.XXXXXX")}"
 mkdir -p "$LOG_DIR"
 STEPS=("lint:make lint" "check:make check" "test:make test")
 FAILED=0
