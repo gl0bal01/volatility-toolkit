@@ -15,6 +15,15 @@
 
 set -euo pipefail
 IFS=$'\n\t'
+# Output holds credential material (hashdump, lsadump): files 600, dirs 700,
+# even inside a pre-existing output directory.
+umask 077
+
+# declare -A and ${var,,} need bash 4; macOS ships 3.2 as /bin/bash.
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "vol-analyze requires bash 4.0+ (found ${BASH_VERSION}). On macOS: brew install bash" >&2
+    exit 1
+fi
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -27,16 +36,18 @@ readonly DEFAULT_OUTPUT_DIR="volatility_output"
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
 setup_colors() {
-    if [[ -t 1 ]] && [[ -z "${NO_COLOR+set}" ]]; then
-        RED='\033[0;31m'
-        GREEN='\033[0;32m'
-        YELLOW='\033[1;33m'
-        BLUE='\033[0;34m'
-        CYAN='\033[0;36m'
-        MAGENTA='\033[0;35m'
-        BOLD='\033[1m'
-        DIM='\033[2m'
-        NC='\033[0m'
+    # Real ESC bytes ($'...'), not '\033' text: the codes are also embedded in
+    # heredocs and %s arguments, which do not interpret backslash escapes.
+    if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+        RED=$'\033[0;31m'
+        GREEN=$'\033[0;32m'
+        YELLOW=$'\033[1;33m'
+        BLUE=$'\033[0;34m'
+        CYAN=$'\033[0;36m'
+        MAGENTA=$'\033[0;35m'
+        BOLD=$'\033[1m'
+        DIM=$'\033[2m'
+        NC=$'\033[0m'
     else
         RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' BOLD='' DIM='' NC=''
     fi
@@ -79,7 +90,8 @@ ${BOLD}OPTIONS${NC}
 ${BOLD}ENVIRONMENT${NC}
     VOL3_CMD                    Volatility 3 command (default: vol)
     MAX_PARALLEL                Default max parallel jobs (default: ${DEFAULT_MAX_PARALLEL})
-    NO_COLOR                    Set to disable colored output (any value)
+    VOL_DETECT_TIMEOUT          Seconds per OS auto-detection probe (default: 60)
+    NO_COLOR                    Set to disable colored output (any non-empty value)
 
 ${BOLD}EXAMPLES${NC}
     ${SCRIPT_NAME} memory.raw                                    # auto-detect OS
@@ -147,8 +159,8 @@ validate() {
     local vol_base
     vol_base=$(basename "$(command -v "$VOL")")
     case "$vol_base" in
-        vol|vol3|volatility3|python|python3) ;;
-        *) fatal "VOL3_CMD resolves to unexpected binary '${vol_base}' — expected vol, vol3, volatility3, or python/python3" ;;
+        vol|vol3|volatility3|vol.py) ;;
+        *) fatal "VOL3_CMD resolves to unexpected binary '${vol_base}' — expected vol, vol3, volatility3, or vol.py" ;;
     esac
 
     case "$TARGET_OS" in
@@ -156,23 +168,32 @@ validate() {
         *) fatal "Invalid --os value: ${TARGET_OS} (must be: windows, linux, mac, auto)" ;;
     esac
 
-    # Reject dangerous output paths. If the parent directory exists we use
-    # the resolved absolute form; otherwise (e.g. /proc on macOS) we fall
-    # back to the literal argument so the blacklist still matches.
+    # Reject dangerous output paths, compared in resolved absolute form:
+    # the directory itself if it exists (catches /, /etc/, /tmp/..), else its
+    # parent; if neither exists (e.g. /proc on macOS) the literal argument.
+    # /var and /run subtrees stay allowed: /var/tmp, macOS $TMPDIR
+    # (/var/folders) and udisks evidence-drive mounts (/run/media/$USER).
     local resolved_output abs_parent
-    if abs_parent=$(cd "$(dirname "$OUTPUT_DIR")" 2>/dev/null && pwd); then
-        resolved_output="${abs_parent}/$(basename "$OUTPUT_DIR")"
+    if resolved_output=$(cd -- "$OUTPUT_DIR" 2>/dev/null && pwd); then
+        :
+    elif abs_parent=$(cd -- "$(dirname -- "$OUTPUT_DIR")" 2>/dev/null && pwd); then
+        resolved_output="${abs_parent%/}/$(basename -- "$OUTPUT_DIR")"
     else
         resolved_output="$OUTPUT_DIR"
     fi
     case "$resolved_output" in
-        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/var|/var/*|/lib|/lib/*|/run|/run/*)
+        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/var|/lib|/lib/*|/run)
             fatal "Refusing to use system directory as output: ${OUTPUT_DIR}" ;;
     esac
 
-    if ! [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] || (( MAX_PARALLEL < 1 )); then
+    # 10# forces base 10: bare "08" is an invalid octal literal in (( )).
+    if ! [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] || (( 10#$MAX_PARALLEL < 1 )); then
         fatal "Invalid --jobs value: ${MAX_PARALLEL} (must be a positive integer)"
     fi
+    MAX_PARALLEL=$(( 10#$MAX_PARALLEL ))
+
+    [[ "$DETECT_TIMEOUT_SECS" =~ ^[0-9]+$ ]] \
+        || fatal "Invalid VOL_DETECT_TIMEOUT: ${DETECT_TIMEOUT_SECS} (must be whole seconds)"
 
     # OS-specific flag validation
     if [[ "$TARGET_OS" != "windows" && "$TARGET_OS" != "auto" ]]; then
@@ -212,17 +233,12 @@ file_size_bytes() {
     stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo "0"
 }
 
-# Portable timeout wrapper. Returns 124 on timeout (GNU coreutils convention).
-# If no timeout binary available, runs the command without a timer.
-run_with_timeout() {
-    local secs="$1"; shift
-    if command -v timeout &>/dev/null; then
-        timeout "$secs" "$@"
-    elif command -v gtimeout &>/dev/null; then
-        gtimeout "$secs" "$@"
-    else
-        "$@"
-    fi
+# Run an external command as a background job and wait for it. Unlike a
+# foreground command, `wait` returns as soon as an INT/TERM trap fires, and
+# cleanup() then finds the command via `jobs -p` and kills it.
+run_job() {
+    "$@" &
+    wait $!
 }
 
 # Human-readable byte size (portable: avoids GNU numfmt dependency on macOS).
@@ -239,7 +255,7 @@ human_size() {
     local idx=0 val=$bytes
     while (( val >= 1024 && idx < ${#units[@]} - 1 )); do
         val=$(( val / 1024 ))
-        (( idx++ ))
+        (( ++idx ))
     done
     printf '%d%s\n' "$val" "${units[$idx]}"
 }
@@ -279,37 +295,49 @@ cleanup() {
         kill $pids 2>/dev/null || true
         wait 2>/dev/null || true
     fi
-    if [[ -n "${OUTPUT_DIR:-}" ]]; then
-        rm -rf "${OUTPUT_DIR:?}/.timing" 2>/dev/null || true
-    fi
 }
-trap cleanup EXIT INT TERM
+# INT/TERM must exit (which fires the EXIT trap); a handler that returns
+# lets the scheduler loop resume and launch the remaining plugins.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ─── OS Detection ────────────────────────────────────────────────────────────
 
 readonly DETECT_TIMEOUT_SECS="${VOL_DETECT_TIMEOUT:-60}"
 
-# stdout returns the detected OS name; everything else goes to stderr so
-# `$(detect_os)` is not polluted by status messages.
+# Sets TARGET_OS. Runs in the main shell, not `$(...)`, so a signal is
+# handled at once instead of after the remaining probes.
 detect_os() {
-    info "Auto-detecting OS from memory dump (${DETECT_TIMEOUT_SECS}s timeout per probe)..." >&2
+    # GNU timeout, or gtimeout from Homebrew coreutils; exit 124 on timeout.
+    local -a timer=()
+    if command -v timeout &>/dev/null; then
+        timer=(timeout "$DETECT_TIMEOUT_SECS")
+    elif command -v gtimeout &>/dev/null; then
+        timer=(gtimeout "$DETECT_TIMEOUT_SECS")
+    fi
+    if (( ${#timer[@]} > 0 )); then
+        info "Auto-detecting OS from memory dump (${DETECT_TIMEOUT_SECS}s timeout per probe)..."
+    else
+        warn "No timeout/gtimeout found — OS probes are not time-limited"
+    fi
 
     local probe os_name rc
     for probe in windows.info linux.pslist mac.pslist; do
         os_name="${probe%%.*}"
-        info "  Probing as ${os_name}..." >&2
+        info "  Probing as ${os_name}..."
         rc=0
-        run_with_timeout "$DETECT_TIMEOUT_SECS" "$VOL" -f "$MEMORY_DUMP" "$probe" &>/dev/null || rc=$?
+        run_job ${timer[@]+"${timer[@]}"} "$VOL" -q -f "$MEMORY_DUMP" "$probe" &>/dev/null || rc=$?
         if (( rc == 0 )); then
-            success "Detected: ${BOLD}${os_name}${NC}" >&2
-            echo "$os_name"
+            success "Detected: ${BOLD}${os_name}${NC}"
+            TARGET_OS="$os_name"
             return
         elif (( rc == 124 )); then
-            warn "  Probe for ${os_name} timed out after ${DETECT_TIMEOUT_SECS}s" >&2
+            warn "  Probe for ${os_name} timed out after ${DETECT_TIMEOUT_SECS}s"
         fi
     done
 
-    echo ""
+    fatal "Could not auto-detect OS. Specify manually with --os windows|linux|mac"
 }
 
 # ─── Checksums ───────────────────────────────────────────────────────────────
@@ -323,31 +351,47 @@ compute_checksums() {
     local md5_tmp="${OUTPUT_DIR}/.md5"
     local sha256_tmp="${OUTPUT_DIR}/.sha256"
     local md5_pid="" sha256_pid=""
+    local -a md5_cmd=() sha256_cmd=()
 
-    if command -v md5sum &>/dev/null; then
-        md5sum "$MEMORY_DUMP" > "$md5_tmp" 2>/dev/null &
+    # GNU coreutils, else the BSD/macOS built-ins. Hash stdin: GNU tools
+    # prefix the hash with '\' when the file name contains a backslash.
+    if command -v md5sum &>/dev/null; then md5_cmd=(md5sum)
+    elif command -v md5 &>/dev/null;  then md5_cmd=(md5 -q)
+    fi
+    if command -v sha256sum &>/dev/null; then sha256_cmd=(sha256sum)
+    elif command -v shasum &>/dev/null;  then sha256_cmd=(shasum -a 256)
+    fi
+
+    if (( ${#md5_cmd[@]} > 0 )); then
+        "${md5_cmd[@]}" < "$MEMORY_DUMP" > "$md5_tmp" 2>/dev/null &
         md5_pid=$!
     fi
-    if command -v sha256sum &>/dev/null; then
-        sha256sum "$MEMORY_DUMP" > "$sha256_tmp" 2>/dev/null &
+    if (( ${#sha256_cmd[@]} > 0 )); then
+        "${sha256_cmd[@]}" < "$MEMORY_DUMP" > "$sha256_tmp" 2>/dev/null &
         sha256_pid=$!
     fi
 
-    if [[ -n "$md5_pid" ]]; then
-        if wait "$md5_pid" 2>/dev/null; then
-            CHECKSUM_MD5=$(cut -d ' ' -f1 < "$md5_tmp")
-        fi
+    if [[ -n "$md5_pid" ]] && wait "$md5_pid" 2>/dev/null; then
+        CHECKSUM_MD5=$(cut -d ' ' -f1 < "$md5_tmp")
+        [[ "$CHECKSUM_MD5" =~ ^[0-9a-f]{32}$ ]] || CHECKSUM_MD5=""
     fi
-    if [[ -n "$sha256_pid" ]]; then
-        if wait "$sha256_pid" 2>/dev/null; then
-            CHECKSUM_SHA256=$(cut -d ' ' -f1 < "$sha256_tmp")
-        fi
+    if [[ -n "$sha256_pid" ]] && wait "$sha256_pid" 2>/dev/null; then
+        CHECKSUM_SHA256=$(cut -d ' ' -f1 < "$sha256_tmp")
+        [[ "$CHECKSUM_SHA256" =~ ^[0-9a-f]{64}$ ]] || CHECKSUM_SHA256=""
     fi
 
     rm -f "$md5_tmp" "$sha256_tmp"
 
-    if [[ -n "$CHECKSUM_MD5" ]];    then success "MD5:    ${CHECKSUM_MD5}";    fi
-    if [[ -n "$CHECKSUM_SHA256" ]]; then success "SHA256: ${CHECKSUM_SHA256}"; fi
+    if [[ -n "$CHECKSUM_MD5" ]]; then
+        success "MD5:    ${CHECKSUM_MD5}"
+    else
+        warn "MD5 not computed — no md5sum/md5 available or hashing failed"
+    fi
+    if [[ -n "$CHECKSUM_SHA256" ]]; then
+        success "SHA256: ${CHECKSUM_SHA256}"
+    else
+        warn "SHA256 not computed — no sha256sum/shasum available or hashing failed"
+    fi
 }
 
 # ─── Plugin Definitions ─────────────────────────────────────────────────────
@@ -371,14 +415,14 @@ readonly WINDOWS_PLUGINS=(
     "windows.registry.hivelist"
     "windows.registry.printkey"
     "windows.registry.userassist"
-    "windows.hashdump"
-    "windows.lsadump"
+    "windows.registry.hashdump"
+    "windows.registry.lsadump"
     "windows.driverscan"
     "windows.modscan"
     "windows.modules"
     "windows.ssdt"
     "windows.callbacks"
-    "windows.malfind"
+    "windows.malware.malfind"
     "windows.mutantscan"
     "windows.svcscan"
     "windows.mbrscan"
@@ -399,14 +443,14 @@ readonly LINUX_PLUGINS=(
     "linux.kmsg"
     "linux.iomem"
     "linux.elfs"
-    "linux.malfind"
-    "linux.check_syscall"
-    "linux.check_idt"
-    "linux.check_modules"
-    "linux.check_creds"
-    "linux.check_afinfo"
-    "linux.tty_check"
-    "linux.keyboard_notifiers"
+    "linux.malware.malfind"
+    "linux.malware.check_syscall"
+    "linux.malware.check_idt"
+    "linux.malware.check_modules"
+    "linux.malware.check_creds"
+    "linux.malware.check_afinfo"
+    "linux.malware.tty_check"
+    "linux.malware.keyboard_notifiers"
 )
 
 readonly MAC_PLUGINS=(
@@ -448,6 +492,8 @@ select_plugins() {
 ANALYSIS_DURATION=0
 PLUGINS_SUCCEEDED=0
 PLUGINS_FAILED=0
+# Per-plugin exit code and wall-clock seconds, keyed by plugin name.
+declare -A PLUGIN_RC=() PLUGIN_SECS=()
 
 # Derive a safe filename from a plugin name (strip OS prefix, dots to underscores)
 safe_name() {
@@ -455,8 +501,23 @@ safe_name() {
     name="${name#windows.}"
     name="${name#linux.}"
     name="${name#mac.}"
+    name="${name#malware.}"
     name="${name//./_}"
     echo "$name"
+}
+
+# success | warning (exit 0 with stderr output) | failed | missing (never ran)
+plugin_status() {
+    local rc="${PLUGIN_RC[$1]:-}"
+    if [[ -z "$rc" ]]; then
+        echo "missing"
+    elif (( rc != 0 )); then
+        echo "failed"
+    elif [[ -s "${OUTPUT_DIR}/$(safe_name "$1").err" ]]; then
+        echo "warning"
+    else
+        echo "success"
+    fi
 }
 
 run_all_plugins() {
@@ -464,40 +525,36 @@ run_all_plugins() {
     local completed=0
     local succeeded=0
     local failed=0
-    local start_time
-    start_time=$(date +%s)
+    local start_time=$SECONDS
 
     header "Analyzing ${TARGET_OS} dump — ${total} plugins (${MAX_PARALLEL} parallel)"
 
-    mkdir -p "${OUTPUT_DIR}/.timing"
-
-    # `wait -n` requires bash 4.3+. The `${arr[@]+"${arr[@]}"}` idiom on
-    # `survivors` is the bash-`set -u`-safe way to expand a possibly-empty
+    # vol runs as a direct child (no subshell wrapper) so cleanup()'s
+    # `kill $(jobs -p)` reaches it. -q keeps progress bars out of .err, so a
+    # non-empty .err means real warnings. The `${arr[@]+"${arr[@]}"}` idiom
+    # on `survivors` is the bash-`set -u`-safe way to expand a possibly-empty
     # array.
-    declare -A pid_plugin
+    local -A pid_plugin=() pid_start=()
     local -a active_pids=()
-    local i=0 plugin sname output_file err_file pid
+    local i=0 plugin sname pid
 
     while (( i < total )) || (( ${#active_pids[@]} > 0 )); do
         while (( ${#active_pids[@]} < MAX_PARALLEL )) && (( i < total )); do
             plugin="${PLUGINS[$i]}"
             sname=$(safe_name "$plugin")
-            output_file="${OUTPUT_DIR}/${sname}.txt"
-            err_file="${OUTPUT_DIR}/${sname}.err"
-
-            (
-                _t_start=$(date +%s)
-                "$VOL" -f "$MEMORY_DUMP" "$plugin" > "$output_file" 2>"$err_file"
-                _t_end=$(date +%s)
-                echo $(( _t_end - _t_start )) > "${OUTPUT_DIR}/.timing/${sname}"
-            ) &
+            "$VOL" -q -f "$MEMORY_DUMP" "$plugin" \
+                > "${OUTPUT_DIR}/${sname}.txt" 2> "${OUTPUT_DIR}/${sname}.err" &
             pid=$!
             pid_plugin[$pid]="$plugin"
+            pid_start[$pid]=$SECONDS
             active_pids+=("$pid")
-            (( i++ ))
+            (( ++i ))
         done
 
-        wait -n 2>/dev/null || true
+        # ponytail: 1s poll instead of `wait -n`, which ignores jobs that
+        # exited before it was called and so leaves freed slots idle until a
+        # slow plugin ends. Plugins run for seconds to minutes; poll is noise.
+        sleep 1
 
         local -a survivors=()
         local p
@@ -509,33 +566,27 @@ run_all_plugins() {
             local exit_code=0
             wait "$p" 2>/dev/null || exit_code=$?
             local pname="${pid_plugin[$p]}"
-            local psname
-            psname=$(safe_name "$pname")
-            (( completed++ ))
-            local duration="?"
-            local tfile="${OUTPUT_DIR}/.timing/${psname}"
-            [[ -f "$tfile" ]] && duration=$(cat "$tfile")
+            local duration=$(( SECONDS - pid_start[$p] ))
+            PLUGIN_RC[$pname]=$exit_code
+            PLUGIN_SECS[$pname]=$duration
+            (( ++completed ))
             if (( exit_code == 0 )); then
-                (( succeeded++ ))
+                (( ++succeeded ))
                 printf '  %b✓%b %b[%2d/%d]%b %-42s %b%ss%b\n' \
                     "${GREEN}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "$pname" "${DIM}" "$duration" "${NC}"
             else
-                (( failed++ ))
-                printf '  %b!%b %b[%2d/%d]%b %-42s %b%ss (see .err)%b\n' \
-                    "${YELLOW}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "$pname" "${DIM}" "$duration" "${NC}"
+                (( ++failed ))
+                printf '  %b!%b %b[%2d/%d]%b %-42s %b%ss (exit %d, see .err)%b\n' \
+                    "${YELLOW}" "${NC}" "${DIM}" "$completed" "$total" "${NC}" "$pname" "${DIM}" "$duration" "$exit_code" "${NC}"
             fi
-            unset 'pid_plugin[$p]'
+            unset 'pid_plugin[$p]' 'pid_start[$p]'
         done
         active_pids=(${survivors[@]+"${survivors[@]}"})
     done
 
-    local end_time
-    end_time=$(date +%s)
-    ANALYSIS_DURATION=$(( end_time - start_time ))
+    ANALYSIS_DURATION=$(( SECONDS - start_time ))
     PLUGINS_SUCCEEDED=$succeeded
     PLUGINS_FAILED=$failed
-
-    rm -rf "${OUTPUT_DIR}/.timing"
 
     echo ""
     if (( failed == 0 )); then
@@ -554,9 +605,14 @@ extract_strings() {
     mkdir -p "$strings_dir"
 
     info "Running strings on memory dump (this may take a while for large dumps)..."
-    if ! strings -n 6 "$MEMORY_DUMP" > "${strings_dir}/all.txt" 2>/dev/null; then
+    if ! run_job strings -a -n 6 "$MEMORY_DUMP" > "${strings_dir}/all.txt" 2>/dev/null; then
         warn "strings command failed or produced no output"
         return
+    fi
+    # Windows stores most paths, URLs and registry data as UTF-16LE.
+    if [[ "$TARGET_OS" == "windows" ]]; then
+        run_job strings -a -n 6 -e l "$MEMORY_DUMP" >> "${strings_dir}/all.txt" 2>/dev/null \
+            || warn "strings lacks -e l (GNU binutils) — UTF-16LE strings skipped"
     fi
 
     local total_strings
@@ -581,7 +637,7 @@ extract_strings() {
     # RFC 1035 label rules; ext blocklist filters noise like "kernel.dll".
     grep -oE '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}\b' \
         "${strings_dir}/all.txt" \
-        | grep -ivE '\.(exe|dll|sys|drv|ocx|cpl|scr|com|bat|cmd|ps1|vbs|js|jse|wsf|wsh|hta|msi|lnk|inf|reg|txt|log|tmp|dat|bin|ini|cfg|conf|cnf|xml|json|yaml|yml|html|htm|css|jpg|jpeg|png|gif|bmp|ico|svg|webp|pdf|doc|docx|xls|xlsx|ppt|pptx|csv|rtf|odt|ods|odp|zip|tar|gz|bz2|xz|7z|rar|iso|deb|rpm|pkg|dmg|app|so|dylib|jar|class|py|pyc|pyd|c|cpp|h|hpp|o|a|md|rst)$' \
+        | grep -ivE '\.(exe|dll|sys|drv|ocx|cpl|scr|bat|cmd|ps1|vbs|js|jse|wsf|wsh|hta|msi|lnk|inf|reg|txt|log|tmp|dat|bin|ini|cfg|conf|cnf|xml|json|yaml|yml|html|htm|css|jpg|jpeg|png|gif|bmp|ico|svg|webp|pdf|doc|docx|xls|xlsx|ppt|pptx|csv|rtf|odt|ods|odp|zip|tar|gz|bz2|xz|7z|rar|iso|deb|rpm|pkg|dmg|app|so|dylib|jar|class|py|pyc|pyd|c|cpp|h|hpp|o|a|md|rst)$' \
         | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
 
     local path_categories=()
@@ -624,7 +680,7 @@ dump_files() {
     mkdir -p "$dump_dir"
 
     info "Running windows.dumpfiles (this may take a while)..."
-    if "$VOL" -o "$dump_dir/" -f "$MEMORY_DUMP" windows.dumpfiles > "${OUTPUT_DIR}/dumpfiles_index.txt" 2>"${OUTPUT_DIR}/dumpfiles.err"; then
+    if run_job "$VOL" -q -o "$dump_dir/" -f "$MEMORY_DUMP" windows.dumpfiles > "${OUTPUT_DIR}/dumpfiles_index.txt" 2>"${OUTPUT_DIR}/dumpfiles.err"; then
         local count
         count=$(find "$dump_dir" -type f 2>/dev/null | wc -l)
         success "Dumped ${count} files to ${dump_dir}/"
@@ -647,7 +703,7 @@ dump_registry() {
     mkdir -p "$reg_dir"
 
     info "Dumping registry hives via windows.registry.hivelist --dump..."
-    if "$VOL" -o "$reg_dir/" -f "$MEMORY_DUMP" windows.registry.hivelist --dump \
+    if run_job "$VOL" -q -o "$reg_dir/" -f "$MEMORY_DUMP" windows.registry.hivelist --dump \
             > "${OUTPUT_DIR}/registry_hivelist.txt" 2>"${OUTPUT_DIR}/registry_dump.err"; then
         local count
         count=$(find "$reg_dir" -type f 2>/dev/null | wc -l)
@@ -688,22 +744,11 @@ generate_text_report() {
 	REPORT
 
     for plugin in "${PLUGINS[@]}"; do
-        local sname
-        sname=$(safe_name "$plugin")
-        local output_file="${OUTPUT_DIR}/${sname}.txt"
-        local err_file="${OUTPUT_DIR}/${sname}.err"
-
-        if [[ -f "$output_file" ]]; then
-            local lines
-            lines=$(wc -l < "$output_file")
-            local status="OK"
-            if [[ -f "$err_file" ]] && [[ -s "$err_file" ]]; then
-                status="WARN"
-            fi
-            printf "  %-6s %-40s %6d lines\n" "$status" "$plugin" "$lines" >> "$report"
-        else
-            printf "  %-6s %-40s %6s\n" "MISS" "$plugin" "-" >> "$report"
-        fi
+        local status output_file lines="-"
+        status=$(plugin_status "$plugin")
+        output_file="${OUTPUT_DIR}/$(safe_name "$plugin").txt"
+        [[ -f "$output_file" ]] && lines=$(wc -l < "$output_file")
+        printf "  %-8s %-40s %6s lines\n" "${status^^}" "$plugin" "$lines" >> "$report"
     done
 
     cat >> "$report" <<-REPORT
@@ -752,23 +797,14 @@ generate_json_report() {
 
         local first=true
         for plugin in "${PLUGINS[@]}"; do
-            local sname
-            sname=$(safe_name "$plugin")
-            local output_file="${OUTPUT_DIR}/${sname}.txt"
-            local err_file="${OUTPUT_DIR}/${sname}.err"
-            local status="missing" lines=0
-
-            if [[ -f "$output_file" ]]; then
-                lines=$(wc -l < "$output_file")
-                if [[ -f "$err_file" ]] && [[ -s "$err_file" ]]; then
-                    status="warning"
-                else
-                    status="success"
-                fi
-            fi
+            local status output_file lines=0
+            status=$(plugin_status "$plugin")
+            output_file="${OUTPUT_DIR}/$(safe_name "$plugin").txt"
+            [[ -f "$output_file" ]] && lines=$(wc -l < "$output_file")
 
             [[ "$first" == true ]] && first=false || printf ',\n'
-            printf '    "%s": {"status": "%s", "output_lines": %d}' "$plugin" "$status" "$lines"
+            printf '    "%s": {"status": "%s", "exit_code": %s, "duration_seconds": %s, "output_lines": %d}' \
+                "$plugin" "$status" "${PLUGIN_RC[$plugin]:-null}" "${PLUGIN_SECS[$plugin]:-null}" "$lines"
         done
 
         printf '\n  },\n'
@@ -808,15 +844,13 @@ main() {
     validate
     readonly VOL
 
+    # umask 077 makes a new directory 700. An existing one keeps its mode:
+    # chmod on it (-o /tmp, -o ~) would strip a sticky bit or lock users out.
     mkdir -p "$OUTPUT_DIR"
-    chmod 700 "$OUTPUT_DIR"
 
     # ── OS detection ──
     if [[ "$TARGET_OS" == "auto" ]]; then
-        TARGET_OS=$(detect_os)
-        if [[ -z "$TARGET_OS" ]]; then
-            fatal "Could not auto-detect OS. Specify manually with --os windows|linux|mac"
-        fi
+        detect_os
     else
         info "Target OS: ${BOLD}${TARGET_OS}${NC}"
     fi
@@ -848,16 +882,16 @@ main() {
     if [[ "$INTERACTIVE" == true ]]; then
         echo ""
         if [[ "$EXTRACT_STRINGS" != true ]]; then
-            read -rp "$(printf '%b[?]%b Extract IOC strings? (y/N) ' "${YELLOW}" "${NC}")" answer
+            read -rp "$(printf '%b[?]%b Extract IOC strings? (y/N) ' "${YELLOW}" "${NC}")" answer || answer=""
             [[ "${answer,,}" == "y" ]] && extract_strings
         fi
         if [[ "$TARGET_OS" == "windows" ]]; then
             if [[ "$DUMP_FILES" != true ]]; then
-                read -rp "$(printf '%b[?]%b Dump files from memory? (y/N) ' "${YELLOW}" "${NC}")" answer
+                read -rp "$(printf '%b[?]%b Dump files from memory? (y/N) ' "${YELLOW}" "${NC}")" answer || answer=""
                 [[ "${answer,,}" == "y" ]] && dump_files
             fi
             if [[ "$DUMP_REGISTRY" != true ]]; then
-                read -rp "$(printf '%b[?]%b Dump registry hives? (y/N) ' "${YELLOW}" "${NC}")" answer
+                read -rp "$(printf '%b[?]%b Dump registry hives? (y/N) ' "${YELLOW}" "${NC}")" answer || answer=""
                 [[ "${answer,,}" == "y" ]] && dump_registry
             fi
         fi
@@ -869,6 +903,11 @@ main() {
     generate_json_report
 
     echo ""
+    # Non-zero exit for automation: nothing ran usefully (wrong --os, or no
+    # kernel symbols for Linux/macOS).
+    if (( PLUGINS_SUCCEEDED == 0 )); then
+        fatal "No plugin succeeded — check --os and, for Linux/macOS, kernel symbols (see .err files in ${OUTPUT_DIR}/)"
+    fi
     success "Analysis complete — results in ${BOLD}${OUTPUT_DIR}/${NC}"
 }
 
