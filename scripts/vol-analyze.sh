@@ -100,7 +100,7 @@ ${BOLD}EXAMPLES${NC}
     ${SCRIPT_NAME} memory.lime --os linux --extract-strings
 
 ${BOLD}SUPPORTED OS${NC}
-    windows   30 plugins — processes, network, registry, malware, drivers, services
+    windows   32 plugins — processes, console history, network, registry, malware, drivers, services
     linux     21 plugins — processes, kernel modules, network, rootkit checks
     mac       20 plugins — processes, kernel, network, TrustedBSD, kauth
 
@@ -402,6 +402,8 @@ readonly WINDOWS_PLUGINS=(
     "windows.psscan"
     "windows.pstree"
     "windows.cmdline"
+    "windows.cmdscan"
+    "windows.consoles"
     "windows.sessions"
     "windows.getsids"
     "windows.privileges"

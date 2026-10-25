@@ -89,6 +89,17 @@ vol -f memory.raw windows.cmdline
 
 **Look for:** Encoded PowerShell commands (`-enc`, `-EncodedCommand`), unusual flags on system binaries, `cmd.exe /c` chains, references to temp directories or network paths, LOLBin abuse patterns.
 
+### windows.cmdscan / windows.consoles
+
+Recover console command history (`cmdscan`) and full console screen buffers, commands plus their output (`consoles`), from `conhost.exe`.
+
+```bash
+vol -f memory.raw windows.cmdscan
+vol -f memory.raw windows.consoles
+```
+
+**Look for:** Commands typed by an attacker that `cmdline` cannot show (they ran inside an existing `cmd.exe`), output of recon commands (`whoami`, `net user`, `ipconfig`), scripts launched by hand. Both depend on the `conhost.exe` version and fail on some older builds, such as Windows 7 x86.
+
 ### windows.sessions
 
 Show session information for each process (which logon session a process belongs to).

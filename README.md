@@ -44,7 +44,7 @@ chmod +x scripts/vol-analyze.sh
 
 | OS | Plugins | Highlights | Prerequisites |
 |----|---------|------------|---------------|
-| **Windows** | 30 | Processes, DLLs, network, registry, services, malware detection, kernel drivers, SSDT | None (symbols bundled with Volatility 3) |
+| **Windows** | 32 | Processes, console history, DLLs, network, registry, services, malware detection, kernel drivers, SSDT | None (Volatility 3 fetches kernel symbols from Microsoft on first use) |
 | **Linux** | 21 | Processes, bash history, kernel modules, network, rootkit checks (syscall/IDT/creds) | [Kernel symbols required](#linuxmacos-memory-dumps) |
 | **macOS** | 20 | Processes, kexts, network, TrustedBSD, kauth listeners, syscall/sysctl checks | [Kernel symbols required](#linuxmacos-memory-dumps) |
 
@@ -137,7 +137,7 @@ volatility_output/
 
 Practical, opinionated guides — not just command references.
 
-- **[Windows Cheatsheet](docs/vol3-cheatsheet.md)** — 30 plugins with workflow context
+- **[Windows Cheatsheet](docs/vol3-cheatsheet.md)** — 32 plugins with workflow context
 - **[Linux Cheatsheet](docs/linux-cheatsheet.md)** — 21 plugins including rootkit detection
 - **[macOS Cheatsheet](docs/mac-cheatsheet.md)** — 20 plugins including TrustedBSD and kauth
 - **[Malware Analysis Guide](docs/vol3-malware-analysis.md)** — Hunting malware in memory

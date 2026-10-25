@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Windows: `windows.cmdscan` and `windows.consoles` (console command history and output) — 32 Windows plugins.
 - `make update-tlds` refreshes the IANA TLD list used for domain IOCs; `make install` installs it to `$(BINDIR)/../share/volatility-toolkit/`.
 
 ### Fixed

@@ -332,6 +332,7 @@ test_windows_strings() {
     PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" --os windows \
         -o "${work}/out" --extract-strings --dump-registry &>/dev/null || rc=$?
     assert_eq "windows run exits 0" "0" "$rc"
+    assert_eq "every windows plugin invoked" "32" "$(grep -cE ' windows\.[a-z.]+$' "${work}/calls")"
     assert_contains "registry dump keeps hivelist plugin output" "init" "$(cat "${work}/out/registry_hivelist.txt")"
     assert_contains "registry dump index written" "File output" "$(cat "${work}/out/registry_dump_index.txt")"
     assert_contains "IOC: Windows path extracted" 'C:\Windows\Temp\evil.exe' "$(cat "${work}/out/strings/windows_paths.txt")"
