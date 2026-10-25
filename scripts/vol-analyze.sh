@@ -78,6 +78,8 @@ ${BOLD}OPTIONS${NC}
         --os TYPE               Target OS: windows, linux, mac, auto (default: auto)
     -o, --output DIR            Output directory (default: ${DEFAULT_OUTPUT_DIR})
     -j, --jobs N                Max parallel plugins (default: ${DEFAULT_MAX_PARALLEL})
+        --symbols DIR           Extra Volatility 3 symbol directory (Linux/macOS ISF files)
+        --isf-url URL           Remote ISF index to look up kernel symbols (https:// or file://)
         --dump-registry         Dump registry hives to disk (Windows only)
         --dump-files            Dump files from memory (Windows only)
         --extract-strings       Extract and categorize IOC strings
@@ -98,6 +100,8 @@ ${BOLD}EXAMPLES${NC}
     ${SCRIPT_NAME} memory.raw --os linux -o case-001/ -j 8
     ${SCRIPT_NAME} memory.raw --os windows --dump-files --json
     ${SCRIPT_NAME} memory.lime --os linux --extract-strings
+    ${SCRIPT_NAME} memory.lime --symbols ~/isf/
+    ${SCRIPT_NAME} memory.lime --isf-url https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json
 
 ${BOLD}SUPPORTED OS${NC}
     windows   32 plugins — processes, console history, network, registry, malware, drivers, services
@@ -121,6 +125,11 @@ DUMP_FILES=false
 EXTRACT_STRINGS=false
 JSON_OUTPUT=false
 INTERACTIVE=false
+SYMBOL_DIR=""
+ISF_URL=""
+# Options for every vol call. -q keeps progress bars out of .err, so a
+# non-empty .err means real warnings.
+VOL_OPTS=(-q)
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -130,6 +139,8 @@ parse_args() {
             --os)                 TARGET_OS="${2:?Missing argument for $1}"; shift 2 ;;
             -o|--output)          OUTPUT_DIR="${2:?Missing argument for $1}"; shift 2 ;;
             -j|--jobs)            MAX_PARALLEL="${2:?Missing argument for $1}"; shift 2 ;;
+            --symbols)            SYMBOL_DIR="${2:?Missing argument for $1}"; shift 2 ;;
+            --isf-url)            ISF_URL="${2:?Missing argument for $1}"; shift 2 ;;
             --dump-registry)      DUMP_REGISTRY=true; shift ;;
             --dump-files)         DUMP_FILES=true; shift ;;
             --extract-strings)    EXTRACT_STRINGS=true; shift ;;
@@ -194,6 +205,29 @@ validate() {
 
     [[ "$DETECT_TIMEOUT_SECS" =~ ^[0-9]+$ ]] \
         || fatal "Invalid VOL_DETECT_TIMEOUT: ${DETECT_TIMEOUT_SECS} (must be whole seconds)"
+
+    # vol splits -s on ';', so the check runs on the resolved path. Plain
+    # http is refused (vol itself still retries https without certificate
+    # checks; a local --symbols dir is the tamper-proof option). Newlines
+    # would forge lines in the text report.
+    VOL_OPTS=(-q)
+    if [[ "$SYMBOL_DIR$ISF_URL" == *[$'\n\r']* ]]; then
+        fatal "--symbols / --isf-url must not contain line breaks"
+    fi
+    if [[ -n "$SYMBOL_DIR" ]]; then
+        [[ -d "$SYMBOL_DIR" ]] || fatal "Symbols directory not found: ${SYMBOL_DIR}"
+        [[ "$SYMBOL_DIR" == /* ]] || SYMBOL_DIR="./${SYMBOL_DIR}"   # keep "-dir" from parsing as an option
+        SYMBOL_DIR=$(resolve_path "$SYMBOL_DIR")
+        [[ "$SYMBOL_DIR" == *";"* ]] && fatal "Symbols directory path must not contain ';': ${SYMBOL_DIR}"
+        VOL_OPTS+=(-s "$SYMBOL_DIR")
+    fi
+    if [[ -n "$ISF_URL" ]]; then
+        [[ "$ISF_URL" =~ ^(https|file):// ]] \
+            || fatal "Invalid --isf-url: ${ISF_URL} (must start with https:// or file://)"
+        [[ "$ISF_URL" != file://* || -f "${ISF_URL#file://}" ]] \
+            || fatal "ISF index not found: ${ISF_URL#file://}"
+        VOL_OPTS+=(-u "$ISF_URL")
+    fi
 
     # OS-specific flag validation
     if [[ "$TARGET_OS" != "windows" && "$TARGET_OS" != "auto" ]]; then
@@ -327,7 +361,7 @@ detect_os() {
         os_name="${probe%%.*}"
         info "  Probing as ${os_name}..."
         rc=0
-        run_job ${timer[@]+"${timer[@]}"} "$VOL" -q -f "$MEMORY_DUMP" "$probe" &>/dev/null || rc=$?
+        run_job ${timer[@]+"${timer[@]}"} "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" "$probe" &>/dev/null || rc=$?
         if (( rc == 0 )); then
             success "Detected: ${BOLD}${os_name}${NC}"
             TARGET_OS="$os_name"
@@ -337,7 +371,7 @@ detect_os() {
         fi
     done
 
-    fatal "Could not auto-detect OS. Specify manually with --os windows|linux|mac"
+    fatal "Could not auto-detect OS. Specify --os windows|linux|mac; Linux/macOS also need kernel symbols (--symbols DIR or --isf-url URL)"
 }
 
 # ─── Checksums ───────────────────────────────────────────────────────────────
@@ -532,8 +566,7 @@ run_all_plugins() {
     header "Analyzing ${TARGET_OS} dump — ${total} plugins (${MAX_PARALLEL} parallel)"
 
     # vol runs as a direct child (no subshell wrapper) so cleanup()'s
-    # `kill $(jobs -p)` reaches it. -q keeps progress bars out of .err, so a
-    # non-empty .err means real warnings. The `${arr[@]+"${arr[@]}"}` idiom
+    # `kill $(jobs -p)` reaches it. The `${arr[@]+"${arr[@]}"}` idiom
     # on `survivors` is the bash-`set -u`-safe way to expand a possibly-empty
     # array.
     local -A pid_plugin=() pid_start=()
@@ -544,7 +577,7 @@ run_all_plugins() {
         while (( ${#active_pids[@]} < MAX_PARALLEL )) && (( i < total )); do
             plugin="${PLUGINS[$i]}"
             sname=$(safe_name "$plugin")
-            "$VOL" -q -f "$MEMORY_DUMP" "$plugin" \
+            "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" "$plugin" \
                 > "${OUTPUT_DIR}/${sname}.txt" 2> "${OUTPUT_DIR}/${sname}.err" &
             pid=$!
             pid_plugin[$pid]="$plugin"
@@ -703,7 +736,7 @@ dump_files() {
     mkdir -p "$dump_dir"
 
     info "Running windows.dumpfiles (this may take a while)..."
-    if run_job "$VOL" -q -o "$dump_dir/" -f "$MEMORY_DUMP" windows.dumpfiles > "${OUTPUT_DIR}/dumpfiles_index.txt" 2>"${OUTPUT_DIR}/dumpfiles.err"; then
+    if run_job "$VOL" "${VOL_OPTS[@]}" -o "$dump_dir/" -f "$MEMORY_DUMP" windows.dumpfiles > "${OUTPUT_DIR}/dumpfiles_index.txt" 2>"${OUTPUT_DIR}/dumpfiles.err"; then
         local count
         count=$(find "$dump_dir" -type f 2>/dev/null | wc -l)
         success "Dumped ${count} files to ${dump_dir}/"
@@ -726,7 +759,7 @@ dump_registry() {
     mkdir -p "$reg_dir"
 
     info "Dumping registry hives via windows.registry.hivelist --dump..."
-    if run_job "$VOL" -q -o "$reg_dir/" -f "$MEMORY_DUMP" windows.registry.hivelist --dump \
+    if run_job "$VOL" "${VOL_OPTS[@]}" -o "$reg_dir/" -f "$MEMORY_DUMP" windows.registry.hivelist --dump \
             > "${OUTPUT_DIR}/registry_dump_index.txt" 2>"${OUTPUT_DIR}/registry_dump.err"; then
         local count
         count=$(find "$reg_dir" -type f 2>/dev/null | wc -l)
@@ -760,6 +793,8 @@ generate_text_report() {
 	Date (UTC)  : ${analysis_date}
 	Duration    : ${ANALYSIS_DURATION}s
 	Output Dir  : $(resolve_path "$OUTPUT_DIR")
+	Symbols Dir : ${SYMBOL_DIR:-none}
+	ISF URL     : ${ISF_URL:-none}
 
 	───────────────────────────────────────────────────────────────
 	  Plugins (${PLUGINS_SUCCEEDED}/${#PLUGINS[@]} succeeded)
@@ -812,6 +847,8 @@ generate_json_report() {
         printf '  "execution": {\n'
         printf '    "duration_seconds": %d,\n' "$ANALYSIS_DURATION"
         printf '    "max_parallel": %d,\n' "$MAX_PARALLEL"
+        printf '    "symbol_dir": "%s",\n' "$(json_escape "$SYMBOL_DIR")"
+        printf '    "isf_url": "%s",\n' "$(json_escape "$ISF_URL")"
         printf '    "plugins_total": %d,\n' "${#PLUGINS[@]}"
         printf '    "plugins_succeeded": %d,\n' "$PLUGINS_SUCCEEDED"
         printf '    "plugins_failed": %d\n' "$PLUGINS_FAILED"
@@ -942,7 +979,7 @@ main() {
     # Non-zero exit for automation: nothing ran usefully (wrong --os, or no
     # kernel symbols for Linux/macOS).
     if (( PLUGINS_SUCCEEDED == 0 )); then
-        fatal "No plugin succeeded — check --os and, for Linux/macOS, kernel symbols (see .err files in ${OUTPUT_DIR}/)"
+        fatal "No plugin succeeded — check --os and, for Linux/macOS, kernel symbols (--symbols / --isf-url; see .err files in ${OUTPUT_DIR}/)"
     fi
     success "Analysis complete — results in ${BOLD}${OUTPUT_DIR}/${NC}"
 }

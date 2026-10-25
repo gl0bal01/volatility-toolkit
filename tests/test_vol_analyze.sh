@@ -172,6 +172,19 @@ test_validation() {
     jobs_output=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --jobs abc 2>&1) || true
     assert_contains "rejects non-numeric --jobs" "Invalid --jobs" "$jobs_output"
 
+    local sym_out
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --symbols "${tmpfile_dir}/nope" 2>&1) || true
+    assert_contains "rejects missing --symbols dir" "Symbols directory not found" "$sym_out"
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --isf-url "http://example.com/banners.json" 2>&1) || true
+    assert_contains "rejects plain-http --isf-url" "Invalid --isf-url" "$sym_out"
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --isf-url "file://${tmpfile_dir}/none.json" 2>&1) || true
+    assert_contains "rejects missing file:// ISF index" "ISF index not found" "$sym_out"
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --isf-url $'https://x/a\nPlugins' 2>&1) || true
+    assert_contains "rejects line breaks in --isf-url" "line breaks" "$sym_out"
+    mkdir "${tmpfile_dir}/a;b"
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --symbols "${tmpfile_dir}/a;b" 2>&1) || true
+    assert_contains "rejects ';' in --symbols path" "must not contain ';'" "$sym_out"
+
     # System directory rejection
     local sysdir_output
     sysdir_output=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o /etc/bad 2>&1) || true
@@ -345,6 +358,37 @@ test_windows_strings() {
     rm -rf "$work"
 }
 
+test_symbol_options() {
+    printf '\n\033[1msymbol options\033[0m\n'
+
+    local work isf url
+    work=$(mktemp -d)
+    make_fake_vol "$work"
+    mkdir "${work}/isf"
+    : > "${work}/mem.raw"
+    isf=$(cd "${work}/isf" && pwd -P)   # the script records the resolved path
+    url="file://${work}/banners.json"
+    : > "${work}/banners.json"
+
+    # Auto-detect (windows probe fails, linux wins): probes carry the options too.
+    local rc=0
+    FAKE_NOT_WINDOWS=1 PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" \
+        -o "${work}/out" --json --symbols "${work}/isf" --isf-url "$url" &>/dev/null || rc=$?
+    assert_eq "run with symbol options exits 0" "0" "$rc"
+    assert_eq "2 probes + 21 plugins ran" "23" "$(wc -l < "${work}/calls" | tr -d ' ')"
+    assert_eq "every vol call gets -s and -u" "23" "$(grep -cF -- "-q -s ${isf} -u ${url} -f " "${work}/calls")"
+    assert_contains "text report records the ISF URL" "ISF URL     : ${url}" "$(cat "${work}/out/analysis_summary.txt")"
+    assert_contains "JSON records the symbols dir" "\"symbol_dir\": \"${isf}\"" "$(cat "${work}/out/analysis_summary.json")"
+
+    # Windows file and registry dumps carry them as well (32 plugins + 2 dumps).
+    rm -f "${work}/calls"
+    PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" --os windows -o "${work}/win" \
+        --dump-files --dump-registry --symbols "${work}/isf" --isf-url "$url" &>/dev/null || true
+    assert_eq "dump calls get -s and -u too" "34" "$(grep -cF -- "-q -s ${isf} -u ${url} " "${work}/calls")"
+
+    rm -rf "$work"
+}
+
 # Start the script against a vol that never finishes, SIGTERM it once
 # $1 vols are running, and check it exits promptly without leaving any behind.
 check_sigterm() {
@@ -414,6 +458,7 @@ main() {
     test_validation
     test_end_to_end
     test_windows_strings
+    test_symbol_options
     test_termination
     test_script_quality
 

@@ -245,6 +245,8 @@ macOS analysis requires an ISF matching the dump's kernel. [Abyss-W4tcher/volati
    cp mac-symbols.json ~/.cache/volatility3/symbols/mac/
    ```
 
+With `vol-analyze`, `--symbols DIR` points at a folder of ISF files instead, and `--isf-url URL` at a remote index.
+
 ---
 
 ## Further Reading

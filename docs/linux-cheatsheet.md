@@ -260,6 +260,8 @@ cd ~/.cache/volatility3/symbols/linux && curl -fsSLO '<ISF URL>'
 
 Plain `vol` can also look the kernel up itself (needs internet access): `vol --remote-isf-url 'https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json' -f memory.lime linux.pslist`.
 
+With `vol-analyze`, pass the same index with `--isf-url URL`, or a folder of ISF files with `--symbols DIR`; every plugin and the OS auto-detection then use it.
+
 **Generate one** when no prebuilt ISF matches:
 
 ```bash

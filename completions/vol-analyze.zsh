@@ -10,6 +10,8 @@ _vol-analyze() {
         '--output[Output directory]:directory:_directories'
         '-j[Max parallel plugins]:jobs:_message "positive integer"'
         '--jobs[Max parallel plugins]:jobs:_message "positive integer"'
+        '--symbols[Extra symbol directory (ISF files)]:directory:_directories'
+        '--isf-url[Remote ISF index URL]:url:(https\://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json)'
         '--dump-registry[Dump registry hives (Windows only)]'
         '--dump-files[Dump files from memory (Windows only)]'
         '--extract-strings[Extract and categorize IOC strings]'

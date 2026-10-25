@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Windows: `windows.cmdscan` and `windows.consoles` (console command history and output) — 32 Windows plugins.
+- `--symbols DIR` and `--isf-url URL` pass kernel symbols to every `vol` call (`-s` / `-u`), OS auto-detection included, so Linux/macOS dumps work without copying ISF files into Volatility's directories. `--isf-url` takes `https://` or `file://` only (a local `--symbols` directory is the tamper-proof option: Volatility retries a failed TLS verification unverified). Both are recorded in the text and JSON reports.
 - `make update-tlds` refreshes the IANA TLD list used for domain IOCs; `make install` installs it to `$(BINDIR)/../share/volatility-toolkit/`.
 
 ### Fixed

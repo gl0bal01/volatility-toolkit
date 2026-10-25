@@ -7,7 +7,7 @@ _vol_analyze() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    opts="--os -o --output -j --jobs --dump-registry --dump-files --extract-strings --json --interactive --no-color -h --help -v --version"
+    opts="--os -o --output -j --jobs --symbols --isf-url --dump-registry --dump-files --extract-strings --json --interactive --no-color -h --help -v --version"
 
     # mapfile keeps paths containing spaces as single candidates.
     case "$prev" in
@@ -15,7 +15,7 @@ _vol_analyze() {
             mapfile -t COMPREPLY < <(compgen -W "windows linux mac auto" -- "$cur")
             return 0
             ;;
-        -o|--output)
+        -o|--output|--symbols)
             compopt -o filenames
             mapfile -t COMPREPLY < <(compgen -d -- "$cur")
             return 0
@@ -23,6 +23,10 @@ _vol_analyze() {
         -j|--jobs)
             # Free-form integer; offer a sane range as hints
             mapfile -t COMPREPLY < <(compgen -W "$(seq 1 32)" -- "$cur")
+            return 0
+            ;;
+        --isf-url)
+            mapfile -t COMPREPLY < <(compgen -W "https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json" -- "$cur")
             return 0
             ;;
     esac

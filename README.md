@@ -71,6 +71,8 @@ OPTIONS
         --os TYPE               Target OS: windows, linux, mac, auto (default: auto)
     -o, --output DIR            Output directory (default: volatility_output)
     -j, --jobs N                Max parallel plugins (default: 4)
+        --symbols DIR           Extra Volatility 3 symbol directory (Linux/macOS ISF files)
+        --isf-url URL           Remote ISF index to look up kernel symbols (https:// or file://)
         --dump-registry         Dump registry hives to disk (Windows only)
         --dump-files            Dump files from memory (Windows only)
         --extract-strings       Extract and categorize IOC strings
@@ -100,6 +102,12 @@ vol-analyze memory.raw --os windows \
 
 # Linux dump (LiME format) — requires kernel symbols
 vol-analyze memory.lime --os linux --extract-strings --json
+
+# Linux dump, kernel symbols looked up online (common distro kernels)
+vol-analyze memory.lime --isf-url https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json
+
+# Linux dump, your own ISF files
+vol-analyze memory.lime --symbols ~/cases/isf/
 
 # macOS analysis — requires kernel symbols
 vol-analyze memory.raw --os mac -o mac-case/
@@ -173,7 +181,7 @@ cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 
 ### Linux/macOS Memory Dumps
 
-Linux and macOS analysis requires matching kernel symbols (ISF) in `~/.cache/volatility3/symbols/{linux,mac}/`. Prebuilt ISFs for common distro kernels and macOS 10.6–10.15: [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols). See the cheatsheets for lookup and generation:
+Linux and macOS analysis requires matching kernel symbols (ISF): pass a directory with `--symbols DIR`, put the files in `~/.cache/volatility3/symbols/{linux,mac}/`, or let `--isf-url URL` look the kernel up in a remote index (needs internet access; the URL is recorded in the reports). Prebuilt ISFs for common distro kernels and macOS 10.6–10.15: [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols). See the cheatsheets for lookup and generation:
 - [Linux symbols](docs/linux-cheatsheet.md#symbol-requirements)
 - [macOS symbols](docs/mac-cheatsheet.md#symbol-requirements)
 
