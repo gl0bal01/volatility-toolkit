@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `make update-tlds` refreshes the IANA TLD list used for domain IOCs; `make install` installs it to `$(BINDIR)/../share/volatility-toolkit/`.
+
 ### Fixed
+- `--dump-registry` overwrote the `windows.registry.hivelist` plugin output (`registry_hivelist.txt`) with its own index. When hive extraction stops early (paged-out hive on a Windows 10 dump), the hive list and its report line count were lost. The dump index now goes to `registry_dump_index.txt`.
+- `strings/ipv4.txt` kept invalid addresses and pieces of OIDs and version strings (`931.331.331.353`, `1.3.6.1` from `1.3.6.1.4.1.311`): 510 of 779 entries on a Windows 7 CTF image. Only whole dotted quads (trailing dots allowed) with octets up to 255 and no leading zeros are kept; `address.port` forms such as `10.0.0.5.443` are not matched.
+- `strings/domains.txt` was mostly file names and .NET type names on real dumps. A name must now end in a lower-case IANA TLD (`share/volatility-toolkit/tlds.txt`, internationalised `xn--` TLDs included). For TLDs that double as file extensions (`.sh`, `.py`, `.zip`…), file-like names (`run.sh`, `libfoo-2.0.so`) are dropped and hosts (`c2.evil.sh`) kept: 18,778 → 810 entries on a Windows 7 CTF image, 370,609 → 81,370 on Windows 10, 47,674 → 9,327 on Debian 7. Upper-case host names are no longer matched.
 - Analysis aborted when the first plugin launched: `(( i++ ))` evaluates to 0, which `set -e` treats as failure. The same pattern in `human_size()` aborted runs on macOS without `numfmt`. Use pre-increment.
 - `-j 08` (zero-padded) made the scheduler spin forever without launching a plugin (octal parse error inside `(( ))`). Values are now parsed as base 10.
 - Ctrl-C / SIGTERM no longer resumes the scheduler loop or leaves orphaned `vol` processes: INT/TERM exit, and `vol` runs as a direct child so cleanup can kill it. OS auto-detection, `strings`, `--dump-files` and `--dump-registry` also stop at once (they used to run to completion, up to 3×60s for detection).

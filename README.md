@@ -123,7 +123,7 @@ volatility_output/
 │   ├── all.txt                  # Raw strings
 │   ├── ipv4.txt                 # IPv4 addresses
 │   ├── urls.txt                 # URLs
-│   ├── domains.txt              # Domain names (by frequency)
+│   ├── domains.txt              # Domain names, IANA TLDs only (by frequency)
 │   ├── emails.txt               # Email addresses
 │   └── windows_paths.txt        # Windows paths  (Windows)
 │   └── unix_paths.txt           # Unix paths     (Linux/macOS)

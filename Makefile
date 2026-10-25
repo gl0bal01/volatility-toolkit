@@ -3,18 +3,22 @@ BINDIR      ?= $(PREFIX)/bin
 DOCDIR      ?= $(PREFIX)/share/doc/volatility-toolkit
 BASHCOMPDIR ?= $(PREFIX)/share/bash-completion/completions
 ZSHCOMPDIR  ?= $(PREFIX)/share/zsh/site-functions
+# The script finds the TLD list at <its dir>/../share/volatility-toolkit.
+DATADIR      = $(BINDIR)/../share/volatility-toolkit
+TLDS         = share/volatility-toolkit/tlds.txt
 SCRIPT       = scripts/vol-analyze.sh
 BIN_NAME     = vol-analyze
 SHELL_FILES  = $(SCRIPT) tests/test_vol_analyze.sh completions/vol-analyze.bash scripts/ci-local.sh
 
-.PHONY: install uninstall lint check test ci help
+.PHONY: install uninstall lint check test ci update-tlds help
 
 help: ## Show this help
 	@grep -E '^[a-z].*:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
 install: ## Install binary, docs, and shell completions (supports DESTDIR)
-	@install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(DOCDIR) $(DESTDIR)$(BASHCOMPDIR) $(DESTDIR)$(ZSHCOMPDIR)
+	@install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(DATADIR) $(DESTDIR)$(DOCDIR) $(DESTDIR)$(BASHCOMPDIR) $(DESTDIR)$(ZSHCOMPDIR)
 	@install -m 755 $(SCRIPT) $(DESTDIR)$(BINDIR)/$(BIN_NAME)
+	@install -m 644 $(TLDS) $(DESTDIR)$(DATADIR)/
 	@install -m 644 docs/*.md $(DESTDIR)$(DOCDIR)/
 	@install -m 644 completions/vol-analyze.bash $(DESTDIR)$(BASHCOMPDIR)/$(BIN_NAME)
 	@install -m 644 completions/vol-analyze.zsh $(DESTDIR)$(ZSHCOMPDIR)/_$(BIN_NAME)
@@ -23,7 +27,8 @@ install: ## Install binary, docs, and shell completions (supports DESTDIR)
 	@echo "Completions installed to $(DESTDIR)$(BASHCOMPDIR) and $(DESTDIR)$(ZSHCOMPDIR) (start a new shell)"
 
 uninstall: ## Remove installed files
-	@rm -f $(DESTDIR)$(BINDIR)/$(BIN_NAME)
+	@rm -f $(DESTDIR)$(BINDIR)/$(BIN_NAME) $(DESTDIR)$(DATADIR)/$(notdir $(TLDS))
+	@rmdir $(DESTDIR)$(DATADIR) 2>/dev/null || true
 	@rm -f $(addprefix $(DESTDIR)$(DOCDIR)/,$(notdir $(wildcard docs/*.md)))
 	@rmdir $(DESTDIR)$(DOCDIR) 2>/dev/null || true
 	@rm -f $(DESTDIR)$(BASHCOMPDIR)/$(BIN_NAME) $(DESTDIR)$(ZSHCOMPDIR)/_$(BIN_NAME)
@@ -42,6 +47,11 @@ test: ## Run unit and end-to-end tests
 
 ci: ## Run every CI step locally (same steps as .github/workflows/lint.yml)
 	@bash scripts/ci-local.sh
+
+update-tlds: ## Refresh the IANA TLD list used for domain IOCs
+	curl -fsSL https://data.iana.org/TLD/tlds-alpha-by-domain.txt -o $(TLDS).tmp
+	grep -qx COM $(TLDS).tmp && mv $(TLDS).tmp $(TLDS)
+	@head -1 $(TLDS)
 
 check: ## Verify runtime dependencies
 	@echo "Checking dependencies..."

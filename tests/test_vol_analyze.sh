@@ -229,6 +229,7 @@ for last; do :; done
 echo "\$*" >> "${dir}/calls"
 case "\$last" in
     *check_idt) echo "Unsatisfied requirement"; echo "boom" >&2; exit 1 ;;
+    --dump) printf 'Offset\tFile output\n'; exit 0 ;;
     windows.info) [ -n "\${FAKE_NOT_WINDOWS:-}" ] && exit 1 ;;
     *) [ -n "\${FAKE_ALL_FAIL:-}" ] && exit 1 ;;
 esac
@@ -247,7 +248,7 @@ test_end_to_end() {
     # Backslash in the name: GNU md5sum escapes it, which used to corrupt
     # the recorded hash and the JSON.
     local dump="${work}/case\\mem.raw"
-    printf 'junk http://evil.com/payload c2.badguy.com 10.13.37.1 junk\n' > "$dump"
+    printf 'junk http://evil.com/payload c2.badguy.com c2.evil.sh connect 10.13.37.1... 931.331.331.353 1.3.6.1.4.1.311 System.Configuration ntdll.pdb run.sh libfoo-2.0.so junk\n' > "$dump"
 
     # Zero-padded -j also checks base-10 parsing ("08" is invalid octal).
     out=$(PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
@@ -277,8 +278,15 @@ test_end_to_end() {
     assert_contains "JSON has per-plugin exit code" '"linux.malware.check_idt": {"status": "failed", "exit_code": 1' "$(cat "$json")"
 
     assert_contains "IOC: .com domains kept" "evil.com" "$(cat "${work}/out/strings/domains.txt")"
+    assert_contains "IOC: host on a file-extension TLD kept" "c2.evil.sh" "$(cat "${work}/out/strings/domains.txt")"
+    if [[ -s "${work}/out/strings/domains.txt" ]] \
+            && ! grep -qE 'System|pdb|run\.sh|libfoo' "${work}/out/strings/domains.txt"; then
+        pass "IOC: non-TLD names and file names dropped from domains"
+    else
+        fail "IOC: non-TLD names and file names dropped from domains"
+    fi
     assert_contains "IOC: URL extracted" "http://evil.com/payload" "$(cat "${work}/out/strings/urls.txt")"
-    assert_contains "IOC: IPv4 extracted" "10.13.37.1" "$(cat "${work}/out/strings/ipv4.txt")"
+    assert_eq "IOC: only the valid IPv4 extracted" "10.13.37.1" "$(cat "${work}/out/strings/ipv4.txt")"
 
     # Default path: no --os. windows.info fails, so the linux probe must win.
     out=$(FAKE_NOT_WINDOWS=1 PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" \
@@ -298,6 +306,13 @@ test_end_to_end() {
         -o "${work}/allfail" &>/dev/null || rc=$?
     assert_eq "exits 1 when no plugin succeeds" "1" "$rc"
 
+    # A copy without share/volatility-toolkit/tlds.txt beside it skips domains.
+    mkdir "${work}/bare"
+    cp "$SCRIPT" "${work}/bare/vol-analyze.sh"
+    out=$(PATH="${work}:${PATH}" with_timeout 60 bash "${work}/bare/vol-analyze.sh" "$dump" --os linux \
+        -o "${work}/notld" --extract-strings 2>&1) || true
+    assert_contains "warns when the TLD list is missing" "TLD list not found" "$out"
+
     rm -rf "$work"
 }
 
@@ -315,8 +330,10 @@ test_windows_strings() {
     } > "${work}/mem.raw"
 
     PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" --os windows \
-        -o "${work}/out" --extract-strings &>/dev/null || rc=$?
+        -o "${work}/out" --extract-strings --dump-registry &>/dev/null || rc=$?
     assert_eq "windows run exits 0" "0" "$rc"
+    assert_contains "registry dump keeps hivelist plugin output" "init" "$(cat "${work}/out/registry_hivelist.txt")"
+    assert_contains "registry dump index written" "File output" "$(cat "${work}/out/registry_dump_index.txt")"
     assert_contains "IOC: Windows path extracted" 'C:\Windows\Temp\evil.exe' "$(cat "${work}/out/strings/windows_paths.txt")"
     if strings -e l /dev/null &>/dev/null; then
         assert_contains "IOC: UTF-16LE domain extracted" "wide.example.net" "$(cat "${work}/out/strings/domains.txt")"

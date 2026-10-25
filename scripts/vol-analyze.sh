@@ -621,9 +621,13 @@ extract_strings() {
 
     # ── Universal patterns (all OSes) ──
 
-    # IPv4 addresses
-    grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "${strings_dir}/all.txt" \
-        | grep -vE '^(0\.0\.0\.0|255\.255\.255\.255|127\.0\.0\.)' \
+    # IPv4: whole dotted-quad tokens only (not pieces of OIDs or version
+    # strings like 1.3.6.1.4.1), octets <= 255, no leading zeros.
+    LC_ALL=C tr -c '0-9.\n' '\n' < "${strings_dir}/all.txt" \
+        | sed -E 's/^\.+//; s/\.+$//' \
+        | grep -xE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+        | awk -F. '$1 <= 255 && $2 <= 255 && $3 <= 255 && $4 <= 255' \
+        | grep -vE '(^|\.)0[0-9]|^(0\.0\.0\.0|255\.255\.255\.255|127\.0\.0\.)' \
         | sort -u > "${strings_dir}/ipv4.txt" 2>/dev/null || true
 
     # URLs
@@ -634,11 +638,28 @@ extract_strings() {
     grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' "${strings_dir}/all.txt" \
         | sort -u > "${strings_dir}/emails.txt" 2>/dev/null || true
 
-    # RFC 1035 label rules; ext blocklist filters noise like "kernel.dll".
-    grep -oE '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}\b' \
-        "${strings_dir}/all.txt" \
-        | grep -ivE '\.(exe|dll|sys|drv|ocx|cpl|scr|bat|cmd|ps1|vbs|js|jse|wsf|wsh|hta|msi|lnk|inf|reg|txt|log|tmp|dat|bin|ini|cfg|conf|cnf|xml|json|yaml|yml|html|htm|css|jpg|jpeg|png|gif|bmp|ico|svg|webp|pdf|doc|docx|xls|xlsx|ppt|pptx|csv|rtf|odt|ods|odp|zip|tar|gz|bz2|xz|7z|rar|iso|deb|rpm|pkg|dmg|app|so|dylib|jar|class|py|pyc|pyd|c|cpp|h|hpp|o|a|md|rst)$' \
-        | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
+    # Domains: RFC 1035 labels ending in a lower-case IANA TLD, which drops
+    # file names (ntdll.pdb) and .NET names (System.Data). For TLDs that are
+    # also file extensions, names that look like files (run.sh, libfoo-2.0.so)
+    # are dropped and hosts (c2.evil.sh) kept. Upper-case hosts are missed.
+    # The list lives in <prefix>/share/volatility-toolkit (scripts/../share in
+    # a checkout); refresh it with `make update-tlds`, then `make install`.
+    local self tlds
+    self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null) || self="${BASH_SOURCE[0]}"
+    tlds="$(dirname "$self")/../share/volatility-toolkit/tlds.txt"
+    if [[ -s "$tlds" ]]; then
+        grep -oE '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})\b' \
+            "${strings_dir}/all.txt" \
+            | awk -F. -v ext="app ax cab cat ci ht java la map md mo mov ms page pf pid pl pm properties ps py rs sh so zip" '
+                BEGIN { n = split(ext, e, " "); for (i = 1; i <= n; i++) is_ext[e[i]] }
+                NR == FNR { if ($0 !~ /^#/) tld[tolower($0)]; next }
+                !($NF in tld) { next }
+                ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/) { next }
+                $0 !~ /^[0-9.]+\.[a-z]+$/' "$tlds" - \
+            | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
+    else
+        warn "TLD list not found at ${tlds} — skipping domains.txt"
+    fi
 
     local path_categories=()
     case "$TARGET_OS" in
@@ -704,7 +725,7 @@ dump_registry() {
 
     info "Dumping registry hives via windows.registry.hivelist --dump..."
     if run_job "$VOL" -q -o "$reg_dir/" -f "$MEMORY_DUMP" windows.registry.hivelist --dump \
-            > "${OUTPUT_DIR}/registry_hivelist.txt" 2>"${OUTPUT_DIR}/registry_dump.err"; then
+            > "${OUTPUT_DIR}/registry_dump_index.txt" 2>"${OUTPUT_DIR}/registry_dump.err"; then
         local count
         count=$(find "$reg_dir" -type f 2>/dev/null | wc -l)
         success "Dumped ${count} registry hives to ${reg_dir}/"
