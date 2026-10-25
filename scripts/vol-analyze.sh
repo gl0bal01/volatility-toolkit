@@ -571,10 +571,13 @@ run_all_plugins() {
     # array.
     local -A pid_plugin=() pid_start=()
     local -a active_pids=()
-    local i=0 plugin sname pid
+    # The first plugin runs alone: it fills vol's caches (Windows PDB
+    # download, --isf-url index and ISF). Parallel runs on a cold cache read
+    # each other's half-written cache files and fail (JSONDecodeError).
+    local i=0 plugin sname pid slots=1
 
     while (( i < total )) || (( ${#active_pids[@]} > 0 )); do
-        while (( ${#active_pids[@]} < MAX_PARALLEL )) && (( i < total )); do
+        while (( ${#active_pids[@]} < slots )) && (( i < total )); do
             plugin="${PLUGINS[$i]}"
             sname=$(safe_name "$plugin")
             "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" "$plugin" \
@@ -605,6 +608,7 @@ run_all_plugins() {
             PLUGIN_RC[$pname]=$exit_code
             PLUGIN_SECS[$pname]=$duration
             (( ++completed ))
+            slots=$MAX_PARALLEL
             if (( exit_code == 0 )); then
                 (( ++succeeded ))
                 printf '  %b✓%b %b[%2d/%d]%b %-42s %b%ss%b\n' \

@@ -231,15 +231,28 @@ mode_of() { stat -c %A "$1" 2>/dev/null || stat -f %Sp "$1"; }
 
 # Fake vol: last argument is the plugin. check_idt fails the way vol does on
 # an unsatisfied requirement; `slow` mode stands in for a long-running plugin.
+# `order` logs start/end; linux.pslist (first linux plugin) takes a second so
+# a plugin started alongside it would show up before its end.
 make_fake_vol() {
     local dir="$1" mode="${2:-fast}"
     if [[ "$mode" == slow ]]; then
-        printf '#!/bin/sh\necho "$$" >> "%s/pids"\nexec sleep 30\n' "$dir" > "${dir}/vol"
+        # linux.pslist, the first plugin, runs alone; let it finish so the
+        # parallel phase starts.
+        cat > "${dir}/vol" <<EOF
+#!/bin/sh
+for last; do :; done
+[ "\$last" = linux.pslist ] && exit 0
+echo "\$\$" >> "${dir}/pids"
+exec sleep 30
+EOF
     else
         cat > "${dir}/vol" <<EOF
 #!/bin/sh
 for last; do :; done
 echo "\$*" >> "${dir}/calls"
+echo "start \$last" >> "${dir}/order"
+[ "\$last" = linux.pslist ] && sleep 1
+trap 'echo "end \$last" >> "${dir}/order"' EXIT
 case "\$last" in
     *check_idt) echo "Unsatisfied requirement"; echo "boom" >&2; exit 1 ;;
     --dump) printf 'Offset\tFile output\n'; exit 0 ;;
@@ -270,6 +283,7 @@ test_end_to_end() {
     assert_contains "all plugins reported" "20/21 succeeded, 1 with errors" "$out"
     assert_eq "every plugin invoked once" "21" "$(wc -l < "${work}/calls" | tr -d ' ')"
     assert_eq "vol always called with -q" "21" "$(grep -c '^-q ' "${work}/calls")"
+    assert_eq "first plugin runs alone (warms vol caches)" "end linux.pslist" "$(sed -n 2p "${work}/order")"
     assert_eq "new output dir is 700" "drwx------" "$(mode_of "${work}/out")"
 
     local report="${work}/out/analysis_summary.txt"
