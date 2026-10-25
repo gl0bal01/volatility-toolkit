@@ -186,18 +186,6 @@ validate() {
             fatal "Refusing to use system directory as output: ${OUTPUT_DIR}" ;;
     esac
 
-    # An existing output dir must be ours and not group/world-writable:
-    # otherwise another user could pre-create output files (or symlinks) and
-    # receive the hashdump/lsadump results. -H: judge a symlinked dir by its
-    # target, not the link's own lrwxrwxrwx mode.
-    if [[ -d "$OUTPUT_DIR" ]]; then
-        [[ -O "$OUTPUT_DIR" ]] \
-            || fatal "Output directory is not owned by you: ${OUTPUT_DIR} — pick a new directory"
-        if [[ -n "$(find -H "$resolved_output" -prune \( -perm -020 -o -perm -002 \))" ]]; then
-            fatal "Output directory is writable by group/others: ${OUTPUT_DIR} — chmod go-w it or pick a new directory"
-        fi
-    fi
-
     # 10# forces base 10: bare "08" is an invalid octal literal in (( )).
     if ! [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] || (( 10#$MAX_PARALLEL < 1 )); then
         fatal "Invalid --jobs value: ${MAX_PARALLEL} (must be a positive integer)"
@@ -859,6 +847,19 @@ main() {
     # umask 077 makes a new directory 700. An existing one keeps its mode:
     # chmod on it (-o /tmp, -o ~) would strip a sticky bit or lock users out.
     mkdir -p "$OUTPUT_DIR"
+
+    # Checked after mkdir, so a directory another user creates in a shared
+    # parent between validation and mkdir is not adopted. It must be ours and
+    # not group/world-writable, or someone else could pre-create output files
+    # (or symlinks) and receive the hashdump/lsadump results. -H judges a
+    # symlinked dir by its target, not the link's own lrwxrwxrwx mode.
+    local out_abs
+    out_abs=$(cd -- "$OUTPUT_DIR" && pwd)
+    [[ -O "$out_abs" ]] \
+        || fatal "Output directory is not owned by you: ${OUTPUT_DIR} — pick a new directory"
+    if [[ -n "$(find -H "$out_abs" -prune \( -perm -020 -o -perm -002 \))" ]]; then
+        fatal "Output directory is writable by group/others: ${OUTPUT_DIR} — chmod go-w it or pick a new directory"
+    fi
 
     # ── OS detection ──
     if [[ "$TARGET_OS" == "auto" ]]; then
