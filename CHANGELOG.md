@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Plugin names updated for Volatility 3 2.26.2+; the old aliases are past their removal dates: `windows.malware.malfind`, `windows.registry.hashdump`, `windows.registry.lsadump`, `linux.malware.*` (malfind, check_syscall, check_idt, check_modules, check_creds, check_afinfo, tty_check, keyboard_notifiers). Output files: `hashdump.txt` → `registry_hashdump.txt`, `lsadump.txt` → `registry_lsadump.txt`; malware plugins keep their old names.
+- Linux/macOS docs: prebuilt ISFs from Abyss-W4tcher/volatility3-symbols (banner lookup or `--remote-isf-url`), and `~/.cache/volatility3/symbols/` instead of the install directory.
 - Docs updated for current plugin names and options (YARA, hashdump extras, removed `mac.timecounter`, no Volatility 2 `imageinfo`).
 - Report statuses: `SUCCESS` / `WARNING` (exit 0 with stderr) / `FAILED` / `MISSING`. JSON adds per-plugin `exit_code` and `duration_seconds`.
 - Checksums fall back to `md5` / `shasum -a 256` (stock macOS), with a warning if a hash cannot be computed.

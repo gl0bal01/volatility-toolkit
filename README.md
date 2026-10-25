@@ -173,9 +173,9 @@ cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 
 ### Linux/macOS Memory Dumps
 
-Linux and macOS analysis requires matching kernel symbols. See the cheatsheets for setup:
-- [Linux symbol generation](docs/linux-cheatsheet.md#symbol-requirements)
-- [macOS symbol generation](docs/mac-cheatsheet.md#symbol-requirements)
+Linux and macOS analysis requires matching kernel symbols (ISF) in `~/.cache/volatility3/symbols/{linux,mac}/`. Prebuilt ISFs for common distro kernels and macOS 10.6–10.15: [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols). See the cheatsheets for lookup and generation:
+- [Linux symbols](docs/linux-cheatsheet.md#symbol-requirements)
+- [macOS symbols](docs/mac-cheatsheet.md#symbol-requirements)
 
 ## Contributing
 

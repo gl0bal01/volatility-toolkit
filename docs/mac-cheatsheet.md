@@ -232,7 +232,7 @@ vol -f memory.raw mac.kevents
 
 ## Symbol Requirements
 
-macOS analysis requires matching symbols from Apple's Kernel Debug Kit (KDK):
+macOS analysis requires an ISF matching the dump's kernel. [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols) has prebuilt ISFs for macOS 10.6–10.15 kernels only (same banner lookup as in the [Linux cheatsheet](linux-cheatsheet.md#symbol-requirements); place them in `~/.cache/volatility3/symbols/mac/`). Otherwise generate one from Apple's Kernel Debug Kit (KDK):
 
 1. Download the KDK matching the target's macOS version from [Apple Developer](https://developer.apple.com/download/all/)
 2. Generate symbols with dwarf2json:
@@ -241,7 +241,8 @@ macOS analysis requires matching symbols from Apple's Kernel Debug Kit (KDK):
    ```
 3. Place in Vol3 symbols directory:
    ```bash
-   cp mac-symbols.json /path/to/volatility3/volatility3/symbols/mac/
+   mkdir -p ~/.cache/volatility3/symbols/mac
+   cp mac-symbols.json ~/.cache/volatility3/symbols/mac/
    ```
 
 ---

@@ -246,15 +246,28 @@ vol -f memory.lime linux.iomem
 
 ## Symbol Requirements
 
-Linux memory analysis requires matching kernel symbols. Generate an ISF (Intermediate Symbol Format) file:
+Linux memory analysis requires an ISF (Intermediate Symbol Format) file that matches the dump's kernel exactly. Volatility 3 searches `~/.cache/volatility3/symbols/linux/` (`$XDG_CACHE_HOME/volatility3/...` when set) as well as its install directory; the file name does not matter (the banner inside is matched).
+
+**Prebuilt ISF (try first).** [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols) covers common Ubuntu, Debian, Kali, AlmaLinux and Rocky kernels:
+
+```bash
+vol -f memory.lime banners                        # kernel banner of the dump
+curl -fsSLO https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners_plain.json
+grep -A2 -F '<full banner from above>' banners_plain.json   # → ISF download URL
+mkdir -p ~/.cache/volatility3/symbols/linux
+cd ~/.cache/volatility3/symbols/linux && curl -fsSLO '<ISF URL>'
+```
+
+Plain `vol` can also look the kernel up itself (needs internet access): `vol --remote-isf-url 'https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json' -f memory.lime linux.pslist`.
+
+**Generate one** when no prebuilt ISF matches:
 
 ```bash
 # On the target system (or matching kernel):
 sudo apt install linux-image-$(uname -r)-dbgsym  # Debian/Ubuntu
 dwarf2json linux --elf /usr/lib/debug/boot/vmlinux-$(uname -r) > linux-symbols.json
-
-# Place in Vol3 symbols directory:
-cp linux-symbols.json /path/to/volatility3/volatility3/symbols/linux/
+mkdir -p ~/.cache/volatility3/symbols/linux
+cp linux-symbols.json ~/.cache/volatility3/symbols/linux/
 ```
 
 ---
