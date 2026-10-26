@@ -9,6 +9,22 @@ _vol_analyze() {
 
     opts="--os -o --output -j --jobs --symbols --isf-url --dump-registry --dump-files --extract-strings --json --interactive --no-color -h --help -v --version"
 
+    # COMP_WORDBREAKS splits "https://..." at ':', so read the URL and the
+    # option before it from the raw line, and offer only the part after the
+    # last ':' (the part readline replaces). URLs never contain spaces.
+    local line="${COMP_LINE:0:COMP_POINT}" word before
+    word="${line##*[[:space:]]}"
+    before="${line%"$word"}"
+    before="${before%"${before##*[![:space:]]}"}"
+    if [[ "${before##*[[:space:]]}" == --isf-url ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json" -- "$word")
+        if (( ${#COMPREPLY[@]} )) && [[ "$COMP_WORDBREAKS" == *:* && "$word" == *:* ]]; then
+            local colon_prefix="${word%"${word##*:}"}"
+            COMPREPLY=("${COMPREPLY[@]#"$colon_prefix"}")
+        fi
+        return 0
+    fi
+
     # mapfile keeps paths containing spaces as single candidates.
     case "$prev" in
         --os)
@@ -23,10 +39,6 @@ _vol_analyze() {
         -j|--jobs)
             # Free-form integer; offer a sane range as hints
             mapfile -t COMPREPLY < <(compgen -W "$(seq 1 32)" -- "$cur")
-            return 0
-            ;;
-        --isf-url)
-            mapfile -t COMPREPLY < <(compgen -W "https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json" -- "$cur")
             return 0
             ;;
     esac

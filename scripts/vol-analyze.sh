@@ -528,6 +528,7 @@ select_plugins() {
 ANALYSIS_DURATION=0
 PLUGINS_SUCCEEDED=0
 PLUGINS_FAILED=0
+SYMBOLS_USED=""
 # Per-plugin exit code and wall-clock seconds, keyed by plugin name.
 declare -A PLUGIN_RC=() PLUGIN_SECS=()
 
@@ -574,15 +575,21 @@ run_all_plugins() {
     # The first plugin runs alone: it fills vol's caches (Windows PDB
     # download, --isf-url index and ISF). Parallel runs on a cold cache read
     # each other's half-written cache files and fail (JSONDecodeError).
+    # It also writes vol's debug log, which names the symbol file vol really
+    # used: a remote ISF it cached on an earlier run counts even without -u.
+    # vol appends to the log, so an earlier run's log is removed first.
     local i=0 plugin sname pid slots=1
+    local -a log_opt=(-l "${OUTPUT_DIR}/vol.log")
+    rm -f -- "${OUTPUT_DIR}/vol.log"
 
     while (( i < total )) || (( ${#active_pids[@]} > 0 )); do
         while (( ${#active_pids[@]} < slots )) && (( i < total )); do
             plugin="${PLUGINS[$i]}"
             sname=$(safe_name "$plugin")
-            "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" "$plugin" \
+            "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" ${log_opt[@]+"${log_opt[@]}"} "$plugin" \
                 > "${OUTPUT_DIR}/${sname}.txt" 2> "${OUTPUT_DIR}/${sname}.err" &
             pid=$!
+            log_opt=()
             pid_plugin[$pid]="$plugin"
             pid_start[$pid]=$SECONDS
             active_pids+=("$pid")
@@ -626,6 +633,8 @@ run_all_plugins() {
     ANALYSIS_DURATION=$(( SECONDS - start_time ))
     PLUGINS_SUCCEEDED=$succeeded
     PLUGINS_FAILED=$failed
+    SYMBOLS_USED=$(awk -F 'Using symbol library: ' 'NF > 1 { print $2; exit }' \
+        "${OUTPUT_DIR}/vol.log" 2>/dev/null) || true
 
     echo ""
     if (( failed == 0 )); then
@@ -661,12 +670,20 @@ extract_strings() {
     # ── Universal patterns (all OSes) ──
 
     # IPv4: whole dotted-quad tokens only (not pieces of OIDs or version
-    # strings like 1.3.6.1.4.1), octets <= 255, no leading zeros.
+    # strings like 1.3.6.1.4.1), octets <= 255, no leading zeros. 0.0.0.0/8
+    # is never a host (on Linux dumps it is a third of the hits, all
+    # versions); so are 255.255.255.255 and 127.0.0.x. macOS netstat writes
+    # address.port (10.0.0.5.443), so a fifth part is cut off there (5-part
+    # OIDs such as 1.3.6.1.4 then give false hits); on Windows and Linux
+    # dumps it is always an OID or a version.
+    local ip_re='([0-9]{1,3}\.){3}[0-9]{1,3}'
+    [[ "$TARGET_OS" == "mac" ]] && ip_re+='(\.[1-9][0-9]{0,4})?'
     LC_ALL=C tr -c '0-9.\n' '\n' < "${strings_dir}/all.txt" \
         | sed -E 's/^\.+//; s/\.+$//' \
-        | grep -xE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
-        | awk -F. '$1 <= 255 && $2 <= 255 && $3 <= 255 && $4 <= 255' \
-        | grep -vE '(^|\.)0[0-9]|^(0\.0\.0\.0|255\.255\.255\.255|127\.0\.0\.)' \
+        | grep -xE "$ip_re" \
+        | awk -F. '$1 <= 255 && $2 <= 255 && $3 <= 255 && $4 <= 255 && (NF == 4 || $5 <= 65535) {
+                print $1 "." $2 "." $3 "." $4 }' \
+        | grep -vE '(^|\.)0[0-9]|^(0\.|255\.255\.255\.255|127\.0\.0\.)' \
         | sort -u > "${strings_dir}/ipv4.txt" 2>/dev/null || true
 
     # URLs
@@ -677,24 +694,44 @@ extract_strings() {
     grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' "${strings_dir}/all.txt" \
         | sort -u > "${strings_dir}/emails.txt" 2>/dev/null || true
 
-    # Domains: RFC 1035 labels ending in a lower-case IANA TLD, which drops
-    # file names (ntdll.pdb) and .NET names (System.Data). For TLDs that are
-    # also file extensions, names that look like files (run.sh, libfoo-2.0.so)
-    # are dropped and hosts (c2.evil.sh) kept. Upper-case hosts are missed.
+    # Domains: RFC 1035 labels ending in an IANA TLD, counted lower-cased.
+    # All-caps names need 3+ labels and a 2-3 letter TLD (LOGIN.LIVE.COM):
+    # shorter ones are Defender signatures (Exploit:O97M/CVE-2017-0199.AL),
+    # COMMAND.COM or .NET namespaces. Also dropped as noise seen in real dumps:
+    #   - minified JS: e.target, t.data, Date.now, Object.prototype.call
+    #     (one-letter names stay on .com/.net/.org/.me: x.org, t.me)
+    #   - closed brand TLDs that clash with code names: microsoft.windows,
+    #     rela.data, wscript.shell
+    #   - on TLDs that are also file extensions, file names (run.sh,
+    #     libfoo-2.0.so, CMD.EXE-CD245F9E.pf) but not hosts (c2.evil.sh)
+    # URL escapes (%2F, %252F, backslash-u002F) are blanked first so they
+    # don't glue onto names.
     # The list lives in <prefix>/share/volatility-toolkit (scripts/../share in
     # a checkout); refresh it with `make update-tlds`, then `make install`.
     local self tlds
     self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null) || self="${BASH_SOURCE[0]}"
     tlds="$(dirname "$self")/../share/volatility-toolkit/tlds.txt"
     if [[ -s "$tlds" ]]; then
-        grep -oE '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})\b' \
-            "${strings_dir}/all.txt" \
-            | awk -F. -v ext="app ax cab cat ci ht java la map md mo mov ms page pf pid pl pm properties ps py rs sh so zip" '
-                BEGIN { n = split(ext, e, " "); for (i = 1; i <= n; i++) is_ext[e[i]] }
+        LC_ALL=C sed -E 's/%(25)*[0-9A-Fa-f]{2}|\\(u00|x)[0-9A-Fa-f]{2}/ /g' "${strings_dir}/all.txt" \
+            | LC_ALL=C grep -oE \
+                -e '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})\b' \
+                -e '\b([A-Z0-9]([A-Z0-9-]{0,61}[A-Z0-9])?\.){2,}[A-Z]{2,63}\b' \
+            | LC_ALL=C awk -F. -v ext="app ax cab cat ci ht java la map md mo mov ms page pf pid pl pm properties ps py rs sh so zip" \
+                -v brand="azure bing call data microsoft next now office search shell skype target windows xbox" \
+                -v js="this self window document globalThis Date Math Object Array JSON Promise Symbol Number String Reflect Function console navigator location" '
+                BEGIN {
+                    n = split(ext, w, " "); for (i = 1; i <= n; i++) is_ext[w[i]]
+                    n = split(brand, w, " "); for (i = 1; i <= n; i++) is_brand[w[i]]
+                    n = split(js, w, " "); for (i = 1; i <= n; i++) is_js[w[i]]
+                }
                 NR == FNR { if ($0 !~ /^#/) tld[tolower($0)]; next }
-                !($NF in tld) { next }
-                ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/) { next }
-                $0 !~ /^[0-9.]+\.[a-z]+$/' "$tlds" - \
+                !/[a-z]/ && length($NF) > 3 { next }
+                ($1 in is_js) && !(NF > 2 && $NF ~ /^(com|net|org)$/) || /\.prototype\./ { next }
+                NF == 2 && length($1) == 1 && $NF !~ /^(com|net|org|me)$/ { next }
+                { file_case = substr($0, 1, length($0) - length($NF)) !~ /[a-z]/; $0 = tolower($0) }
+                !($NF in tld) || ($NF in is_brand) || /^[0-9.]+\.[a-z]+$/ { next }
+                ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/ || file_case) { next }
+                { print }' "$tlds" - \
             | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
     else
         warn "TLD list not found at ${tlds} — skipping domains.txt"
@@ -799,6 +836,7 @@ generate_text_report() {
 	Output Dir  : $(resolve_path "$OUTPUT_DIR")
 	Symbols Dir : ${SYMBOL_DIR:-none}
 	ISF URL     : ${ISF_URL:-none}
+	Symbols Used: ${SYMBOLS_USED:-unknown}
 
 	───────────────────────────────────────────────────────────────
 	  Plugins (${PLUGINS_SUCCEEDED}/${#PLUGINS[@]} succeeded)
@@ -853,6 +891,7 @@ generate_json_report() {
         printf '    "max_parallel": %d,\n' "$MAX_PARALLEL"
         printf '    "symbol_dir": "%s",\n' "$(json_escape "$SYMBOL_DIR")"
         printf '    "isf_url": "%s",\n' "$(json_escape "$ISF_URL")"
+        printf '    "symbols_used": "%s",\n' "$(json_escape "$SYMBOLS_USED")"
         printf '    "plugins_total": %d,\n' "${#PLUGINS[@]}"
         printf '    "plugins_succeeded": %d,\n' "$PLUGINS_SUCCEEDED"
         printf '    "plugins_failed": %d\n' "$PLUGINS_FAILED"

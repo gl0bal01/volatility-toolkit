@@ -126,12 +126,13 @@ volatility_output/
 ├── netscan.txt / sockstat.txt   # Network (OS-dependent)
 ├── malfind.txt                  # Malware detection
 ├── *.err                        # Per-plugin error logs
+├── vol.log                      # Volatility debug log of the first plugin (symbol lookup)
 ├── ...                          # (all plugin outputs)
 ├── strings/                     # (with --extract-strings)
 │   ├── all.txt                  # Raw strings
 │   ├── ipv4.txt                 # IPv4 addresses
 │   ├── urls.txt                 # URLs
-│   ├── domains.txt              # Domain names, IANA TLDs only (by frequency)
+│   ├── domains.txt              # Domain names, IANA TLDs only, lower-cased (by frequency)
 │   ├── emails.txt               # Email addresses
 │   └── windows_paths.txt        # Windows paths  (Windows)
 │   └── unix_paths.txt           # Unix paths     (Linux/macOS)
@@ -181,7 +182,7 @@ cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 
 ### Linux/macOS Memory Dumps
 
-Linux and macOS analysis requires matching kernel symbols (ISF): pass a directory with `--symbols DIR`, put the files in `~/.cache/volatility3/symbols/{linux,mac}/`, or let `--isf-url URL` look the kernel up in a remote index (needs internet access; the URL is recorded in the reports). Prebuilt ISFs for common distro kernels and macOS 10.6–10.15: [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols). See the cheatsheets for lookup and generation:
+Linux and macOS analysis requires matching kernel symbols (ISF): pass a directory with `--symbols DIR`, put the files in `~/.cache/volatility3/symbols/{linux,mac}/`, or let `--isf-url URL` look the kernel up in a remote index (needs internet access; the URL is recorded in the reports). The reports also name the symbol table Volatility actually used ("Symbols Used"), which can be a remote ISF it cached on an earlier `--isf-url` run. Prebuilt ISFs for common distro kernels and macOS 10.6–10.15: [Abyss-W4tcher/volatility3-symbols](https://github.com/Abyss-W4tcher/volatility3-symbols). See the cheatsheets for lookup and generation:
 - [Linux symbols](docs/linux-cheatsheet.md#symbol-requirements)
 - [macOS symbols](docs/mac-cheatsheet.md#symbol-requirements)
 

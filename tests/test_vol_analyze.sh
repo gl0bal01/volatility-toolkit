@@ -249,6 +249,11 @@ EOF
         cat > "${dir}/vol" <<EOF
 #!/bin/sh
 for last; do :; done
+prev=
+for a; do
+    [ "\$prev" = -l ] && echo "DEBUG    volatility3.framework.automagic.symbol_finder Using symbol library: file:///isf/fake.json.xz" >> "\$a"
+    prev=\$a
+done
 echo "\$*" >> "${dir}/calls"
 echo "start \$last" >> "${dir}/order"
 [ "\$last" = linux.pslist ] && sleep 1
@@ -275,6 +280,9 @@ test_end_to_end() {
     # the recorded hash and the JSON.
     local dump="${work}/case\\mem.raw"
     printf 'junk http://evil.com/payload c2.badguy.com c2.evil.sh connect 10.13.37.1... 931.331.331.353 1.3.6.1.4.1.311 System.Configuration ntdll.pdb run.sh libfoo-2.0.so junk\n' > "$dump"
+    # Real hosts in odd forms, then noise seen in real dumps; 10.0.0.5.443 is
+    # macOS netstat's address.port.
+    printf 'LOGIN.EVIL-CORP.COM X.org t.me console.aws.amazon.com payload.example.com.EXE Shop.Allegro.pl 0.9.18.2 url=https%%3A%%2F%%2Fescaped.example.org q%%3Dleak.example.net u%%252Fdouble.example.org e.target Date.now this.data System.IO microsoft.windows Exploit:O97M/CVE-2017-0199.AL CMD.EXE-CD245F9E.pf PROVIDERDEFINITION.MICROSOFT.WINDOWS.INK.WORKSPACE 10.0.0.5.443\n' >> "$dump"
 
     # Zero-padded -j also checks base-10 parsing ("08" is invalid octal).
     out=$(PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
@@ -283,12 +291,14 @@ test_end_to_end() {
     assert_contains "all plugins reported" "20/21 succeeded, 1 with errors" "$out"
     assert_eq "every plugin invoked once" "21" "$(wc -l < "${work}/calls" | tr -d ' ')"
     assert_eq "vol always called with -q" "21" "$(grep -c '^-q ' "${work}/calls")"
+    assert_eq "only the first plugin writes vol.log" "1" "$(grep -c -- ' -l ' "${work}/calls")"
     assert_eq "first plugin runs alone (warms vol caches)" "end linux.pslist" "$(sed -n 2p "${work}/order")"
     assert_eq "new output dir is 700" "drwx------" "$(mode_of "${work}/out")"
 
     local report="${work}/out/analysis_summary.txt"
     assert_contains "text report marks failure" "FAILED   linux.malware.check_idt" "$(cat "$report")"
     assert_contains "text report marks success" "SUCCESS  linux.pslist" "$(cat "$report")"
+    assert_contains "text report names the symbols vol used" "Symbols Used: file:///isf/fake.json.xz" "$(cat "$report")"
     if grep -qE 'MD5 +: N/A|SHA256 +: N/A' "$report"; then
         fail "checksums computed"
     else
@@ -303,17 +313,27 @@ test_end_to_end() {
     fi
     assert_contains "JSON counts failures" '"plugins_failed": 1' "$(cat "$json")"
     assert_contains "JSON has per-plugin exit code" '"linux.malware.check_idt": {"status": "failed", "exit_code": 1' "$(cat "$json")"
+    assert_contains "JSON names the symbols vol used" '"symbols_used": "file:///isf/fake.json.xz"' "$(cat "$json")"
 
-    assert_contains "IOC: .com domains kept" "evil.com" "$(cat "${work}/out/strings/domains.txt")"
-    assert_contains "IOC: host on a file-extension TLD kept" "c2.evil.sh" "$(cat "${work}/out/strings/domains.txt")"
-    if [[ -s "${work}/out/strings/domains.txt" ]] \
-            && ! grep -qE 'System|pdb|run\.sh|libfoo' "${work}/out/strings/domains.txt"; then
-        pass "IOC: non-TLD names and file names dropped from domains"
+    local domains host
+    domains=$(cat "${work}/out/strings/domains.txt")
+    # Leading space: the whole name, not a glued-on escape like 2Fescaped...
+    for host in evil.com c2.evil.sh login.evil-corp.com x.org t.me console.aws.amazon.com \
+            payload.example.com shop.allegro.pl escaped.example.org leak.example.net double.example.org; do
+        assert_contains "IOC: domain kept: ${host}" " ${host}" "$domains"
+    done
+    if [[ -n "$domains" ]] \
+            && ! grep -qiE 'system|pdb|run\.sh|libfoo|target|now|this|windows|cve|cd245f9e|providerdefinition' <<< "$domains"; then
+        pass "IOC: non-TLD names, file names, JS and signature names dropped from domains"
     else
-        fail "IOC: non-TLD names and file names dropped from domains"
+        fail "IOC: non-TLD names, file names, JS and signature names dropped from domains"
     fi
     assert_contains "IOC: URL extracted" "http://evil.com/payload" "$(cat "${work}/out/strings/urls.txt")"
-    assert_eq "IOC: only the valid IPv4 extracted" "10.13.37.1" "$(cat "${work}/out/strings/ipv4.txt")"
+    assert_eq "IOC: only the valid IPv4 extracted (no address.port off macOS)" "10.13.37.1" "$(cat "${work}/out/strings/ipv4.txt")"
+
+    PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os mac \
+        -o "${work}/mac" --extract-strings &>/dev/null || true
+    assert_eq "IOC: macOS address.port gives its address" "10.0.0.5 10.13.37.1" "$(tr '\n' ' ' < "${work}/mac/strings/ipv4.txt" | sed 's/ $//')"
 
     # Default path: no --os. windows.info fails, so the linux probe must win.
     out=$(FAKE_NOT_WINDOWS=1 PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" \
@@ -324,8 +344,11 @@ test_end_to_end() {
     # Re-running into an existing directory must not chmod it.
     mkdir "${work}/shared"
     chmod 755 "${work}/shared"
+    echo "Using symbol library: file:///isf/old-run.json.xz" > "${work}/shared/vol.log"
     PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux -o "${work}/shared" &>/dev/null || true
     assert_eq "existing output dir keeps its mode" "drwxr-xr-x" "$(mode_of "${work}/shared")"
+    assert_contains "re-run reports its own symbols, not the old vol.log's" \
+        "Symbols Used: file:///isf/fake.json.xz" "$(cat "${work}/shared/analysis_summary.txt")"
     assert_eq "files in existing dir are 600" "-rw-------" "$(mode_of "${work}/shared/pslist.txt")"
 
     rc=0
@@ -403,6 +426,22 @@ test_symbol_options() {
     rm -rf "$work"
 }
 
+test_completion() {
+    printf '\n\033[1mbash completion\033[0m\n'
+
+    # Readline splits words at ':' (COMP_WORDBREAKS) and replaces only the
+    # text after it, so after "https:" the rest of the URL must be offered.
+    local got
+    got=$(bash -c '
+        source "$1"
+        COMP_WORDBREAKS=" :"
+        COMP_LINE="vol-analyze --isf-url https:"; COMP_POINT=${#COMP_LINE}
+        COMP_WORDS=(vol-analyze --isf-url https :); COMP_CWORD=3
+        _vol_analyze; printf "%s" "${COMPREPLY[*]}"' _ "${PROJECT_DIR}/completions/vol-analyze.bash")
+    assert_eq "--isf-url completes after https:" \
+        "//github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json" "$got"
+}
+
 # Start the script against a vol that never finishes, SIGTERM it once
 # $1 vols are running, and check it exits promptly without leaving any behind.
 check_sigterm() {
@@ -473,6 +512,7 @@ main() {
     test_end_to_end
     test_windows_strings
     test_symbol_options
+    test_completion
     test_termination
     test_script_quality
 

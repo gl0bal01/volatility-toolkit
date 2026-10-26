@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- The text and JSON reports name the symbol table Volatility actually used ("Symbols Used" / `execution.symbols_used`): the ISF file or URL on Linux/macOS, the kernel PDB name and GUID on Windows. It is read from the first plugin's debug log (`vol.log`). "ISF URL: none" could hide a remote ISF that Volatility had cached on an earlier `--isf-url` run and kept using.
+- `strings/domains.txt` matches all-caps hosts with three or more labels and a 2–3 letter TLD (`LOGIN.LIVE.COM`). Names are counted lower-cased, so `GitHub.com` and `github.com` add up.
+- `strings/ipv4.txt` on macOS dumps reads netstat's `address.port` form (`10.0.0.5.443` → `10.0.0.5`).
+
+### Fixed
+- Bash completion of `--isf-url` offered nothing once the URL contained `:` (`https:`), because readline splits words at colons.
+- `strings/domains.txt` noise on real dumps (Windows 10, Windows 7 CTF image, Debian 7). Dropped: minified JavaScript (`e.target`, `Date.now`, `Object.prototype.…`; one-letter names stay on .com/.net/.org/.me: `x.org`, `t.me`), closed brand TLDs that clash with code names (`microsoft.windows`, `rela.data`, `wscript.shell`), Windows prefetch names (`CMD.EXE-CD245F9E.pf`), and URL escapes glued onto names (`2Fwww.w3.org`, `%252F` double encoding included). 81,370 → 78,766 entries on Windows 10, 810 → 761 on Windows 7, 9,327 → 9,197 on Debian 7.
+- `strings/ipv4.txt` kept 0.x.x.x addresses, which are version strings: 784 → 511 entries on Debian 7, 2,531 → 2,503 on Windows 10, 269 → 266 on Windows 7.
+
 ## [3.0.0] - 2026-10-25
 
 Every analysis run since 2.0.0 aborted when the first plugin launched; this release fixes that and was validated end to end on real dumps (MemLabs Lab 0 CTF image, Volatility 3 test-data Windows 10 and Debian 7 samples).
