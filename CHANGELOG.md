@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Bash completion of `--isf-url` offered nothing once the URL contained `:` (`https:`), because readline splits words at colons.
 - `strings/domains.txt` noise on real dumps (Windows 10, Windows 7 CTF image, Debian 7). Dropped: minified JavaScript (`e.target`, `Date.now`, `Object.prototype.…`; one-letter names stay on .com/.net/.org/.me: `x.org`, `t.me`), closed brand TLDs that clash with code names (`microsoft.windows`, `rela.data`, `wscript.shell`), Windows prefetch names (`CMD.EXE-CD245F9E.pf`), and URL escapes glued onto names (`2Fwww.w3.org`, `%252F` double encoding included). 81,370 → 78,766 entries on Windows 10, 810 → 761 on Windows 7, 9,327 → 9,197 on Debian 7.
+- `strings/domains.txt` also drops ELF section and GNU tar header names that end in a real TLD (`note.gnu.build`, `gnu.linkonce.d.rel.ro`, `data.rel.ro`, `rela.got`, `text.hot`, `gnu.sparse.map`); `gnu.org` hosts stay. 9,197 → 9,173 entries on Debian 7.
 - `strings/ipv4.txt` kept 0.x.x.x addresses, which are version strings: 784 → 511 entries on Debian 7, 2,531 → 2,503 on Windows 10, 269 → 266 on Windows 7.
 
 ## [3.0.0] - 2026-10-25

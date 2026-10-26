@@ -702,6 +702,9 @@ extract_strings() {
     #     (one-letter names stay on .com/.net/.org/.me: x.org, t.me)
     #   - closed brand TLDs that clash with code names: microsoft.windows,
     #     rela.data, wscript.shell
+    #   - ELF section and GNU tar header names: note.gnu.build(-id),
+    #     gnu.linkonce.d.rel.ro, data.rel.ro, rela.got, text.hot,
+    #     GNU.sparse.map (gnu.org itself stays)
     #   - on TLDs that are also file extensions, file names (run.sh,
     #     libfoo-2.0.so, CMD.EXE-CD245F9E.pf) but not hosts (c2.evil.sh)
     # URL escapes (%2F, %252F, backslash-u002F) are blanked first so they
@@ -730,6 +733,7 @@ extract_strings() {
                 NF == 2 && length($1) == 1 && $NF !~ /^(com|net|org|me)$/ { next }
                 { file_case = substr($0, 1, length($0) - length($NF)) !~ /[a-z]/; $0 = tolower($0) }
                 !($NF in tld) || ($NF in is_brand) || /^[0-9.]+\.[a-z]+$/ { next }
+                /(^|\.)(note\.gnu|gnu\.(build|linkonce|sparse))(\.|$)|^(rela?|text)\.|(^|\.)rel\.ro$/ { next }
                 ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/ || file_case) { next }
                 { print }' "$tlds" - \
             | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true

@@ -282,7 +282,7 @@ test_end_to_end() {
     printf 'junk http://evil.com/payload c2.badguy.com c2.evil.sh connect 10.13.37.1... 931.331.331.353 1.3.6.1.4.1.311 System.Configuration ntdll.pdb run.sh libfoo-2.0.so junk\n' > "$dump"
     # Real hosts in odd forms, then noise seen in real dumps; 10.0.0.5.443 is
     # macOS netstat's address.port.
-    printf 'LOGIN.EVIL-CORP.COM X.org t.me console.aws.amazon.com payload.example.com.EXE Shop.Allegro.pl 0.9.18.2 url=https%%3A%%2F%%2Fescaped.example.org q%%3Dleak.example.net u%%252Fdouble.example.org e.target Date.now this.data System.IO microsoft.windows Exploit:O97M/CVE-2017-0199.AL CMD.EXE-CD245F9E.pf PROVIDERDEFINITION.MICROSOFT.WINDOWS.INK.WORKSPACE 10.0.0.5.443\n' >> "$dump"
+    printf 'LOGIN.EVIL-CORP.COM X.org t.me console.aws.amazon.com payload.example.com.EXE Shop.Allegro.pl 0.9.18.2 url=https%%3A%%2F%%2Fescaped.example.org q%%3Dleak.example.net u%%252Fdouble.example.org e.target Date.now this.data System.IO microsoft.windows Exploit:O97M/CVE-2017-0199.AL CMD.EXE-CD245F9E.pf PROVIDERDEFINITION.MICROSOFT.WINDOWS.INK.WORKSPACE .note.gnu.build-id .data.rel.ro .rela.got .text.hot GNU.sparse.map ftp.gnu.org 10.0.0.5.443\n' >> "$dump"
 
     # Zero-padded -j also checks base-10 parsing ("08" is invalid octal).
     out=$(PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
@@ -319,11 +319,11 @@ test_end_to_end() {
     domains=$(cat "${work}/out/strings/domains.txt")
     # Leading space: the whole name, not a glued-on escape like 2Fescaped...
     for host in evil.com c2.evil.sh login.evil-corp.com x.org t.me console.aws.amazon.com \
-            payload.example.com shop.allegro.pl escaped.example.org leak.example.net double.example.org; do
+            payload.example.com shop.allegro.pl ftp.gnu.org escaped.example.org leak.example.net double.example.org; do
         assert_contains "IOC: domain kept: ${host}" " ${host}" "$domains"
     done
     if [[ -n "$domains" ]] \
-            && ! grep -qiE 'system|pdb|run\.sh|libfoo|target|now|this|windows|cve|cd245f9e|providerdefinition' <<< "$domains"; then
+            && ! grep -qiE 'system|pdb|run\.sh|libfoo|target|now|this|windows|cve|cd245f9e|providerdefinition|note\.gnu|rel\.ro|rela\.got|text\.hot|sparse' <<< "$domains"; then
         pass "IOC: non-TLD names, file names, JS and signature names dropped from domains"
     else
         fail "IOC: non-TLD names, file names, JS and signature names dropped from domains"
