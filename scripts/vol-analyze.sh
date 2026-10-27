@@ -698,13 +698,15 @@ extract_strings() {
     # All-caps names need 3+ labels and a 2-3 letter TLD (LOGIN.LIVE.COM):
     # shorter ones are Defender signatures (Exploit:O97M/CVE-2017-0199.AL),
     # COMMAND.COM or .NET namespaces. Also dropped as noise seen in real dumps:
-    #   - minified JS: e.target, t.data, Date.now, Object.prototype.call
-    #     (one-letter names stay on .com/.net/.org/.me: x.org, t.me)
+    #   - minified JS: e.target, t.data, Date.now, this.data (one-letter
+    #     names stay on .com/.net/.org/.me: x.org, t.me)
     #   - closed brand TLDs that clash with code names: microsoft.windows,
     #     rela.data, wscript.shell
-    #   - ELF section and GNU tar header names: note.gnu.build(-id),
-    #     gnu.linkonce.d.rel.ro, data.rel.ro, rela.got, text.hot,
-    #     GNU.sparse.map (gnu.org itself stays)
+    #   - ELF section and GNU tar header names, by exact name:
+    #     note.gnu.build(-id), data.rel.ro, gnu.linkonce.lr, rela.got,
+    #     text.hot, GNU.sparse.map
+    # Rules on a first label (JS globals) apply to 2-label names only:
+    # malware picks its own subdomains, so self.c2.top or text.c2.net stay.
     #   - on TLDs that are also file extensions, file names (run.sh,
     #     libfoo-2.0.so, CMD.EXE-CD245F9E.pf) but not hosts (c2.evil.sh)
     # URL escapes (%2F, %252F, backslash-u002F) are blanked first so they
@@ -729,11 +731,12 @@ extract_strings() {
                 }
                 NR == FNR { if ($0 !~ /^#/) tld[tolower($0)]; next }
                 !/[a-z]/ && length($NF) > 3 { next }
-                ($1 in is_js) && !(NF > 2 && $NF ~ /^(com|net|org)$/) || /\.prototype\./ { next }
+                ($1 in is_js) && NF == 2 { next }
                 NF == 2 && length($1) == 1 && $NF !~ /^(com|net|org|me)$/ { next }
                 { file_case = substr($0, 1, length($0) - length($NF)) !~ /[a-z]/; $0 = tolower($0) }
                 !($NF in tld) || ($NF in is_brand) || /^[0-9.]+\.[a-z]+$/ { next }
-                /(^|\.)(note\.gnu|gnu\.(build|linkonce|sparse))(\.|$)|^(rela?|text)\.|(^|\.)rel\.ro$/ { next }
+                /^((note\.)?gnu\.build|note\.gnu\.(gold|property)|text\.hot|rela?\.got|gnu\.sparse\.(map|name))$/ { next }
+                /^(rela?\.)?(gnu\.linkonce\.[a-z][a-z]?(\.rel\.ro)?|l?data\.rel\.ro|rel\.ro)$/ { next }
                 ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/ || file_case) { next }
                 { print }' "$tlds" - \
             | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
