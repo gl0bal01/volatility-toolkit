@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-29
+
+A hardening release. Output can no longer be redirected or mixed up through the output directory, and an interrupted run no longer leaves a broken symbol file in Volatility's cache. IOC lists keep look-alike hosts instead of dropping them. A monthly workflow now runs the latest Volatility 3 on real Linux, Windows 10 and macOS images. It is a major release because the output directory must now be new or empty.
+
 ### Changed
 - **Breaking:** the output directory must be new or empty, the default `volatility_output` included: a second plain `vol-analyze` run in the same directory stops with "Output directory is not empty". Pass a new `-o` directory per dump. Why: see the first two Security entries.
 

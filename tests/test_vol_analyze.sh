@@ -134,7 +134,7 @@ test_arg_parsing() {
     # --version output contains version string
     local ver_output
     ver_output=$(bash "$SCRIPT" --version 2>&1)
-    assert_contains "--version shows version" "v3.0.0" "$ver_output"
+    assert_contains "--version shows version" "v4.0.0" "$ver_output"
 }
 
 # ─── Tests: validation ───────────────────────────────────────────────────────

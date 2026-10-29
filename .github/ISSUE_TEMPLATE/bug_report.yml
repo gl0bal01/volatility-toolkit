@@ -7,7 +7,7 @@ body:
     attributes:
       label: vol-analyze version
       description: Output of `vol-analyze --version`
-      placeholder: vol-analyze v3.1.0
+      placeholder: vol-analyze v4.0.0
     validations:
       required: true
   - type: input

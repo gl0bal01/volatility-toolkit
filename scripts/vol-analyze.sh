@@ -30,7 +30,7 @@ fi
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-readonly VERSION="3.0.0"
+readonly VERSION="4.0.0"
 SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_NAME
 readonly DEFAULT_MAX_PARALLEL=4
