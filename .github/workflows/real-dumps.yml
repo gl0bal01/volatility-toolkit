@@ -28,8 +28,10 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
+      # Python 3.13: on 3.14 (Ubuntu 26.04's default) pip builds pillow and
+      # yara-python from source for the [full] extras, and that fails.
       - name: Install Volatility 3 (latest release)
-        run: pipx install 'volatility3[full]' && vol -h 2>&1 | head -1
+        run: pipx install --python 3.13 --fetch-missing-python 'volatility3[full]' && vol -h 2>&1 | head -1
 
       # On failure the script keeps its logs and reports under $TMPDIR. The
       # step timeout is below the job's, so a hang still uploads the logs.

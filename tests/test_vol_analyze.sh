@@ -239,8 +239,12 @@ test_validation() {
     assert_contains "rejects a non-empty output dir" "not empty" \
         "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/used" 2>&1)"
     chmod 300 "${tmpfile_dir}/used"   # ls -A fails, prints nothing
-    assert_contains "rejects an unreadable output dir" "not readable" \
-        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/used" 2>&1)"
+    if (( EUID == 0 )); then
+        skip "unreadable output dir (root reads it anyway)"
+    else
+        assert_contains "rejects an unreadable output dir" "not readable" \
+            "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/used" 2>&1)"
+    fi
     chmod 700 "${tmpfile_dir}/used"
 
     mkdir "${tmpfile_dir}/groupw"
@@ -262,11 +266,14 @@ test_validation() {
 
 # Bound each run so a scheduler regression fails instead of hanging CI.
 # -k: SIGKILL 5s later in case a regression makes the script ignore TERM.
+# GNU timeout first: uutils timeout (Ubuntu 26.04's default) refuses
+# arguments that are not UTF-8 (the latin-1 file name test).
 with_timeout() {
-    if command -v timeout &>/dev/null; then timeout -k 5 "$@"
-    elif command -v gtimeout &>/dev/null; then gtimeout -k 5 "$@"
-    else shift; "$@"
-    fi
+    local t
+    for t in gtimeout gnutimeout timeout; do
+        command -v "$t" &>/dev/null && { "$t" -k 5 "$@"; return; }
+    done
+    shift; "$@"
 }
 
 # Symbolic mode string, e.g. drwx------ (GNU stat, then BSD/macOS stat).
@@ -620,20 +627,16 @@ test_termination() {
     check_sigterm "OS auto-detect" 1
 
     # A probe that times out gets SIGINT too, and the next probe runs.
-    if command -v timeout &>/dev/null || command -v gtimeout &>/dev/null; then
-        local work out
-        work=$(mktemp -d)
-        make_fake_vol "$work" slow
-        : > "${work}/mem.raw"
-        out=$(VOL_DETECT_TIMEOUT=2 FAKE_ONLY_HANG=windows.info PATH="${work}:${PATH}" \
-            with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" -o "${work}/out" 2>&1) || true
-        assert_contains "probe timeout reported" "timed out after 2s" "$out"
-        assert_eq "a timed-out probe gets SIGINT" "INT" "$(cat "${work}/sigs")"
-        assert_contains "the next probe runs after a timeout" "Detected: linux" "$out"
-        rm -rf "$work"
-    else
-        skip "probe timeout signal (no timeout/gtimeout)"
-    fi
+    local work out
+    work=$(mktemp -d)
+    make_fake_vol "$work" slow
+    : > "${work}/mem.raw"
+    out=$(VOL_DETECT_TIMEOUT=2 FAKE_ONLY_HANG=windows.info PATH="${work}:${PATH}" \
+        with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" -o "${work}/out" 2>&1) || true
+    assert_contains "probe timeout reported" "timed out after 2s" "$out"
+    assert_eq "a timed-out probe gets SIGINT" "INT" "$(cat "${work}/sigs")"
+    assert_contains "the next probe runs after a timeout" "Detected: linux" "$out"
+    rm -rf "$work"
 
     # Ctrl-C ends the script by SIGINT, not exit 130, so a calling shell
     # loop stops too (Python reports death by SIGINT as -2).

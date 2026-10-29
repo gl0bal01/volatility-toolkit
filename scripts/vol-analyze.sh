@@ -95,7 +95,7 @@ ${BOLD}OPTIONS${NC}
 ${BOLD}ENVIRONMENT${NC}
     VOL3_CMD                    Volatility 3 command (default: vol)
     MAX_PARALLEL                Default max parallel jobs (default: ${DEFAULT_MAX_PARALLEL})
-    VOL_DETECT_TIMEOUT          Seconds per OS auto-detection probe (default: 60)
+    VOL_DETECT_TIMEOUT          Seconds per OS auto-detection probe (default: 60, 0: no limit)
     NO_COLOR                    Set to disable colored output (any non-empty value)
 
 ${BOLD}EXAMPLES${NC}
@@ -386,8 +386,8 @@ json_escape() {
 # later: on INT vol runs its `finally` blocks, which delete a symbol file it
 # was still downloading (see detect_os); on TERM it leaves a broken one in
 # its cache for every later run. A Ctrl-C in the terminal has already
-# reached them (not vol under timeout, which has its own process group), and
-# a second INT could cut a `finally` short, so they get 2 s to exit first.
+# reached them, and a second INT could cut a `finally` short, so they get
+# 2 s to exit first.
 cleanup() {
     local pids
     pids=$(jobs -p 2>/dev/null) || true
@@ -420,36 +420,39 @@ readonly DETECT_TIMEOUT_SECS="${VOL_DETECT_TIMEOUT:-60}"
 # Sets TARGET_OS. Runs in the main shell, not `$(...)`, so a signal is
 # handled at once instead of after the remaining probes.
 detect_os() {
-    # GNU timeout, or gtimeout from Homebrew coreutils; exit 124 on timeout.
-    # SIGINT, not TERM: vol creates the Windows symbol file before it
-    # downloads the PDB and deletes it on failure in a `finally`, which runs
-    # on KeyboardInterrupt but not on TERM. A probe killed mid-download would
-    # leave a broken ISF in vol's symbol directory for every later run.
-    # -k: KILL if INT is ignored.
-    local -a timer=()
-    if command -v timeout &>/dev/null; then
-        timer=(timeout -s INT -k 10 "$DETECT_TIMEOUT_SECS")
-    elif command -v gtimeout &>/dev/null; then
-        timer=(gtimeout -s INT -k 10 "$DETECT_TIMEOUT_SECS")
-    fi
-    if (( ${#timer[@]} > 0 )); then
-        info "Auto-detecting OS from memory dump (${DETECT_TIMEOUT_SECS}s timeout per probe)..."
+    local limit=$(( 10#$DETECT_TIMEOUT_SECS ))
+    if (( limit > 0 )); then
+        info "Auto-detecting OS from memory dump (${limit}s timeout per probe)..."
     else
-        warn "No timeout/gtimeout found — OS probes are not time-limited"
+        info "Auto-detecting OS from memory dump..."
     fi
 
-    local probe os_name rc
+    # A slow probe is stopped with SIGINT, not TERM: vol creates the Windows
+    # symbol file before it downloads the PDB and deletes it on failure in a
+    # `finally`, which runs on KeyboardInterrupt but not on TERM. A probe
+    # killed mid-download would leave a broken ISF in vol's symbol directory
+    # for every later run. KILL 10 s later if INT is ignored. Timed here,
+    # not with timeout(1): uutils timeout (Ubuntu 26.04) does not deliver
+    # -s INT.
+    local probe os_name rc pid
     for probe in windows.info linux.pslist mac.pslist; do
         os_name="${probe%%.*}"
         info "  Probing as ${os_name}..."
+        start_job "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" "$probe" &>/dev/null
+        pid=$!
+        if (( limit > 0 )) && ! jobs_gone $(( limit * 10 )) "$pid"; then
+            kill -INT "$pid" 2>/dev/null || true
+            jobs_gone 100 "$pid" || kill -KILL "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            warn "  Probe for ${os_name} timed out after ${limit}s"
+            continue
+        fi
         rc=0
-        run_job ${timer[@]+"${timer[@]}"} "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" "$probe" &>/dev/null || rc=$?
+        wait "$pid" || rc=$?
         if (( rc == 0 )); then
             success "Detected: ${BOLD}${os_name}${NC}"
             TARGET_OS="$os_name"
             return
-        elif (( rc == 124 )); then
-            warn "  Probe for ${os_name} timed out after ${DETECT_TIMEOUT_SECS}s"
         fi
     done
 

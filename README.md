@@ -27,7 +27,7 @@ chmod +x scripts/vol-analyze.sh
 ./scripts/vol-analyze.sh memory.raw
 ```
 
-> **Prerequisite:** Volatility 3 must be installed and available as `vol` in your PATH — install it with extras (`pipx install "volatility3[full]"`) so credential plugins like `windows.registry.hashdump` load. For Linux/macOS memory dumps, you also need matching [kernel symbols](#linuxmacos-memory-dumps).
+> **Prerequisite:** Volatility 3 must be installed and available as `vol` in your PATH — install it with extras (`pipx install "volatility3[full]"`) so credential plugins like `windows.registry.hashdump` load. On Python 3.14 the extras fail to build (no pillow/yara-python wheels): add `--python 3.13 --fetch-missing-python`. For Linux/macOS memory dumps, you also need matching [kernel symbols](#linuxmacos-memory-dumps).
 
 ## What It Does
 
@@ -85,7 +85,7 @@ OPTIONS
 ENVIRONMENT
     VOL3_CMD                    Volatility 3 command (default: vol)
     MAX_PARALLEL                Default parallel jobs (default: 4)
-    VOL_DETECT_TIMEOUT          Seconds per OS auto-detection probe (default: 60)
+    VOL_DETECT_TIMEOUT          Seconds per OS auto-detection probe (default: 60, 0: no limit)
     NO_COLOR                    Set to disable colors (any non-empty value)
 ```
 
@@ -186,7 +186,6 @@ cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 - [Volatility 3](https://github.com/volatilityfoundation/volatility3) 2.26.2+ (current plugin names) — `vol` in PATH (or set `VOL3_CMD`); install `volatility3[full]` for the hashdump/lsadump plugins (pycryptodome)
 - Bash 4.0+ (macOS ships 3.2: `brew install bash`)
 - Standard Unix tools: `strings`, `md5sum`/`md5`, `sha256sum`/`shasum`, `awk`, `sed`, `grep`, `tr`, `fold`, `sort`, `uniq`, `find`, `stat`, `mktemp`, `mkfifo`
-- `timeout` (GNU coreutils; `gtimeout` from Homebrew on macOS) to time-limit OS auto-detection (optional)
 - GNU binutils `strings` for UTF-16LE string extraction on Windows dumps (optional)
 - `iconv` to keep the JSON report valid for file names that are not UTF-8 (optional)
 
