@@ -1,0 +1,56 @@
+name: Bug report
+description: vol-analyze fails, reports the wrong status, or writes wrong output
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: vol-analyze version
+      description: Output of `vol-analyze --version`
+      placeholder: vol-analyze v3.1.0
+    validations:
+      required: true
+  - type: input
+    id: vol-version
+    attributes:
+      label: Volatility 3 version
+      description: First line of `vol -h`
+      placeholder: Volatility 3 Framework 2.28.2
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and Bash version
+      placeholder: Ubuntu 24.04, bash 5.2
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Memory image OS
+      options: [Windows, Linux, macOS, Unknown]
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The full command line. Replace private paths if needed.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >-
+        The run's terminal output, analysis_summary.txt, and the .err file of any
+        failing plugin. Remove anything from the image you can't share.
+      render: text

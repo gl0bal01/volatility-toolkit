@@ -1,0 +1,4 @@
+#!/bin/sh
+# Mirror CI locally before every push (scripts/ci-local.sh).
+# Enable once per clone: make hooks
+exec make ci

@@ -6,8 +6,8 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 SCRIPT="${PROJECT_DIR}/scripts/vol-analyze.sh"
 
 # Disable -eu while sourcing so unset script-runtime globals don't abort
@@ -24,6 +24,7 @@ TESTS_RUN=0
 # ─── Test helpers ─────────────────────────────────────────────────────────────
 
 pass() { (( ++PASS )); (( ++TESTS_RUN )); printf '  \033[0;32m✓\033[0m %s\n' "$1"; }
+skip() { printf '  - skipped: %s\n' "$1"; }
 fail() { (( ++FAIL )); (( ++TESTS_RUN )); printf '  \033[0;31m✗\033[0m %s\n' "$1"; }
 
 assert_eq() {
@@ -106,7 +107,7 @@ test_resolve_path() {
 
     # Relative path should become absolute
     local rel_resolved
-    rel_resolved=$(resolve_path "tests/../scripts/vol-analyze.sh")
+    rel_resolved=$(cd "$PROJECT_DIR" && resolve_path "tests/../scripts/vol-analyze.sh")
     assert_contains "relative path resolves" "/scripts/vol-analyze.sh" "$rel_resolved"
 }
 
@@ -180,7 +181,26 @@ test_validation() {
     sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --isf-url "file://${tmpfile_dir}/none.json" 2>&1) || true
     assert_contains "rejects missing file:// ISF index" "ISF index not found" "$sym_out"
     sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --isf-url $'https://x/a\nPlugins' 2>&1) || true
-    assert_contains "rejects line breaks in --isf-url" "line breaks" "$sym_out"
+    assert_contains "rejects line breaks in --isf-url" "control characters" "$sym_out"
+    # The check runs first: the name never reaches a message or the terminal.
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" $'mem\e]0;x\a.raw' 2>&1) || true
+    assert_contains "rejects escape sequences in the dump path" "control characters" "$sym_out"
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" $'mem\xc2\x9b31m.raw' 2>&1) || true
+    assert_contains "rejects C1 control characters (UTF-8 CSI)" "control characters" "$sym_out"
+    # A symlinked parent directory can carry them in the resolved path.
+    mkdir "${tmpfile_dir}/"$'ev\nMD5'
+    : > "${tmpfile_dir}/"$'ev\nMD5/mem.raw'
+    ln -s $'ev\nMD5' "${tmpfile_dir}/case"
+    assert_contains "rejects control characters in the resolved dump path" "control characters" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "${tmpfile_dir}/case/mem.raw" 2>&1)"
+    assert_contains "rejects control characters in the resolved output path" "control characters" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/case/out" 2>&1)"
+    sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" $'--x\e[31m' 2>&1) || true
+    if [[ "$sym_out" == *"Unknown option"* && "$sym_out" != *$'\e'* ]]; then
+        pass "unknown option is shown escaped"
+    else
+        fail "unknown option is shown escaped"
+    fi
     mkdir "${tmpfile_dir}/a;b"
     sym_out=$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" --symbols "${tmpfile_dir}/a;b" 2>&1) || true
     assert_contains "rejects ';' in --symbols path" "must not contain ';'" "$sym_out"
@@ -199,6 +219,29 @@ test_validation() {
         assert_contains "rejects ${top} as output" "system directory" \
             "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "$top" 2>&1)"
     done
+    ln -s /etc "${tmpfile_dir}/etclink"
+    assert_contains "rejects a symlink to /etc as output" "system directory" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/etclink" 2>&1)"
+    # Parents still to be created: the nearest existing one is resolved.
+    for top in "${tmpfile_dir}/etclink/a/b" /tmp/../etc/zz/yy; do
+        assert_contains "rejects ${top} as output" "system directory" \
+            "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "$top" 2>&1)"
+    done
+    assert_contains "rejects .. after a directory still to be created" "'..' after a directory" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/nx/../../../../../../../etc/zz" 2>&1)"
+
+    assert_contains "rejects an unexpected VOL3_CMD" "unexpected binary" \
+        "$(VOL3_CMD=/bin/ls bash "$SCRIPT" "$tmpfile" 2>&1)"
+
+    # A used directory could hold planted symlinks or another dump's results.
+    mkdir "${tmpfile_dir}/used"
+    : > "${tmpfile_dir}/used/pslist.txt"
+    assert_contains "rejects a non-empty output dir" "not empty" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/used" 2>&1)"
+    chmod 300 "${tmpfile_dir}/used"   # ls -A fails, prints nothing
+    assert_contains "rejects an unreadable output dir" "not readable" \
+        "$(PATH="${fake_bin}:${PATH}" bash "$SCRIPT" "$tmpfile" -o "${tmpfile_dir}/used" 2>&1)"
+    chmod 700 "${tmpfile_dir}/used"
 
     mkdir "${tmpfile_dir}/groupw"
     chmod 775 "${tmpfile_dir}/groupw"
@@ -230,9 +273,10 @@ with_timeout() {
 mode_of() { stat -c %A "$1" 2>/dev/null || stat -f %Sp "$1"; }
 
 # Fake vol: last argument is the plugin. check_idt fails the way vol does on
-# an unsatisfied requirement; `slow` mode stands in for a long-running plugin.
-# `order` logs start/end; linux.pslist (first linux plugin) takes a second so
-# a plugin started alongside it would show up before its end.
+# an unsatisfied requirement; `slow` mode stands in for a long-running plugin
+# and logs the signal that stops it to `sigs` (FAKE_ONLY_HANG: only that
+# plugin is slow). `order` logs start/end; linux.pslist (first linux plugin)
+# takes a second so a plugin started alongside it would show up before its end.
 make_fake_vol() {
     local dir="$1" mode="${2:-fast}"
     if [[ "$mode" == slow ]]; then
@@ -242,8 +286,12 @@ make_fake_vol() {
 #!/bin/sh
 for last; do :; done
 [ "\$last" = linux.pslist ] && exit 0
+[ -n "\${FAKE_ONLY_HANG:-}" ] && [ "\$last" != "\$FAKE_ONLY_HANG" ] && exit 0
+trap 'kill \$! 2>/dev/null; echo INT >> "${dir}/sigs"; exit 130' INT
+trap 'kill \$! 2>/dev/null; echo TERM >> "${dir}/sigs"; exit 143' TERM
 echo "\$\$" >> "${dir}/pids"
-exec sleep 30
+sleep 30 &
+wait
 EOF
     else
         cat > "${dir}/vol" <<EOF
@@ -257,9 +305,14 @@ done
 echo "\$*" >> "${dir}/calls"
 echo "start \$last" >> "${dir}/order"
 [ "\$last" = linux.pslist ] && sleep 1
+# Someone who can write to the parent swaps the output directory mid-run.
+if [ "\$last" = linux.pslist ] && [ -n "\${FAKE_SWAP:-}" ]; then
+    mv "\$FAKE_SWAP" "\$FAKE_SWAP.moved" && mkdir "\$FAKE_SWAP"
+fi
 trap 'echo "end \$last" >> "${dir}/order"' EXIT
 case "\$last" in
     *check_idt) echo "Unsatisfied requirement"; echo "boom" >&2; exit 1 ;;
+    *.pstree) [ -n "\${FAKE_ALL_FAIL:-}" ] && exit 1; echo "WARNING  volatility3: partial result" >&2 ;;
     --dump) printf 'Offset\tFile output\n'; exit 0 ;;
     windows.info) [ -n "\${FAKE_NOT_WINDOWS:-}" ] && exit 1 ;;
     *) [ -n "\${FAKE_ALL_FAIL:-}" ] && exit 1 ;;
@@ -282,7 +335,11 @@ test_end_to_end() {
     printf 'junk http://evil.com/payload c2.badguy.com c2.evil.sh connect 10.13.37.1... 931.331.331.353 1.3.6.1.4.1.311 System.Configuration ntdll.pdb run.sh libfoo-2.0.so junk\n' > "$dump"
     # Real hosts in odd forms, then noise seen in real dumps; 10.0.0.5.443 is
     # macOS netstat's address.port.
-    printf 'LOGIN.EVIL-CORP.COM X.org t.me console.aws.amazon.com payload.example.com.EXE Shop.Allegro.pl 0.9.18.2 url=https%%3A%%2F%%2Fescaped.example.org q%%3Dleak.example.net u%%252Fdouble.example.org e.target Date.now this.data System.IO microsoft.windows Exploit:O97M/CVE-2017-0199.AL CMD.EXE-CD245F9E.pf PROVIDERDEFINITION.MICROSOFT.WINDOWS.INK.WORKSPACE .note.gnu.build-id .data.rel.ro .rela.got .text.hot .rela.gnu.linkonce.td GNU.sparse.map ftp.gnu.org self.c2-panel.top text.evil-cdn.net cdn.rel.ro 10.0.0.5.443\n' >> "$dump"
+    printf 'LOGIN.EVIL-CORP.COM X.org t.me console.aws.amazon.com payload.example.com.EXE Shop.Allegro.pl 0.9.18.2 url=https%%3A%%2F%%2Fescaped.example.org q%%3Dleak.example.net u%%252Fdouble.example.org e.target Date.now this.data System.IO microsoft.windows Exploit:O97M/CVE-2017-0199.AL CMD.EXE-CD245F9E.pf PROVIDERDEFINITION.MICROSOFT.WINDOWS.INK.WORKSPACE .note.gnu.build-id .data.rel.ro .rela.got .text.hot .rela.gnu.linkonce.td GNU.sparse.map ftp.gnu.org self.c2-panel.top text.evil-cdn.net cdn.rel.ro com.apple.audio com.c2-panel.top 10.0.0.5.443\n' >> "$dump"
+    # Hosts an attacker can register to look like noise; c2.trail.top_ ends
+    # in an underscore, a word character for grep. Then a printable run
+    # longer than the 8 KiB fold width.
+    printf 'evil-c2.app 4444.top navigator.top q.ai EVILC2.COM Evil-C2.Top c2.trail.top_ host=c2.port.top_443 browser_win.cc\n%070000d\n' 0 >> "$dump"
 
     # Zero-padded -j also checks base-10 parsing ("08" is invalid octal).
     out=$(PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
@@ -299,6 +356,14 @@ test_end_to_end() {
     assert_contains "text report marks failure" "FAILED   linux.malware.check_idt" "$(cat "$report")"
     assert_contains "text report marks success" "SUCCESS  linux.pslist" "$(cat "$report")"
     assert_contains "text report names the symbols vol used" "Symbols Used: file:///isf/fake.json.xz" "$(cat "$report")"
+    assert_contains "text report marks exit 0 with stderr as warning" "WARNING  linux.pstree" "$(cat "$report")"
+    local md5
+    md5=$( (md5sum 2>/dev/null || md5 -q) < "$dump" | cut -d' ' -f1)
+    if [[ -n "$md5" ]]; then
+        assert_contains "text report has the dump's MD5" "MD5         : ${md5}" "$(cat "$report")"
+    else
+        skip "MD5 in the text report (no md5sum or md5)"
+    fi
     if grep -qE 'MD5 +: N/A|SHA256 +: N/A' "$report"; then
         fail "checksums computed"
     else
@@ -319,7 +384,8 @@ test_end_to_end() {
     domains=$(cat "${work}/out/strings/domains.txt")
     # Leading space: the whole name, not a glued-on escape like 2Fescaped...
     for host in evil.com c2.evil.sh login.evil-corp.com x.org t.me console.aws.amazon.com \
-            payload.example.com shop.allegro.pl ftp.gnu.org self.c2-panel.top text.evil-cdn.net cdn.rel.ro escaped.example.org leak.example.net double.example.org; do
+            payload.example.com shop.allegro.pl ftp.gnu.org self.c2-panel.top text.evil-cdn.net cdn.rel.ro escaped.example.org leak.example.net double.example.org \
+            c2.trail.top c2.port.top; do
         assert_contains "IOC: domain kept: ${host}" " ${host}" "$domains"
     done
     if [[ -n "$domains" ]] \
@@ -328,6 +394,31 @@ test_end_to_end() {
     else
         fail "IOC: non-TLD names, file names, JS and signature names dropped from domains"
     fi
+    local lowconf
+    lowconf=$(cat "${work}/out/strings/domains_lowconf.txt")
+    for host in evil-c2.app 4444.top navigator.top q.ai evilc2.com evil-c2.top run.sh system.io; do
+        if [[ "$lowconf" == *" ${host}"* && "$domains" != *" ${host}"* ]]; then
+            pass "IOC: look-alike name kept in domains_lowconf.txt: ${host}"
+        else
+            fail "IOC: look-alike name kept in domains_lowconf.txt: ${host}"
+        fi
+    done
+    if grep -q 'win\.cc' <<< "$domains$lowconf"; then
+        fail "IOC: inner underscores do not split names (browser_win.cc)"
+    else
+        pass "IOC: inner underscores do not split names (browser_win.cc)"
+    fi
+    local rdns
+    rdns=$(cat "${work}/out/strings/reverse_dns.txt")
+    assert_contains "IOC: reverse-DNS IDs go to reverse_dns.txt" " com.apple.audio" "$rdns"
+    assert_contains "IOC: a com.* host lands in reverse_dns.txt, not lost" " com.c2-panel.top" "$rdns"
+    if grep -q ' com\.' <<< "$domains"; then
+        fail "IOC: reverse-DNS IDs kept out of domains.txt"
+    else
+        pass "IOC: reverse-DNS IDs kept out of domains.txt"
+    fi
+    assert_exit_code "IOC: all.txt written" 0 test -s "${work}/out/strings/all.txt"
+    assert_eq "IOC: all.txt folded at 8 KiB" "" "$(awk 'length > 8192 { print NR }' "${work}/out/strings/all.txt")"
     assert_contains "IOC: URL extracted" "http://evil.com/payload" "$(cat "${work}/out/strings/urls.txt")"
     assert_eq "IOC: only the valid IPv4 extracted (no address.port off macOS)" "10.13.37.1" "$(cat "${work}/out/strings/ipv4.txt")"
 
@@ -341,15 +432,41 @@ test_end_to_end() {
     assert_contains "auto-detects linux" "Detected: linux" "$out"
     assert_contains "auto-detect runs linux plugins" "21 plugins" "$out"
 
-    # Re-running into an existing directory must not chmod it.
+    # Relative VOL3_CMD (the script changes directory), an output dir that
+    # looks like an option, and a backslash in it (awk -v would decode it).
+    rc=0
+    (cd "$work" && VOL3_CMD=./vol with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
+        -o '-rel\001' --extract-strings &>/dev/null) || rc=$?
+    assert_eq "relative VOL3_CMD and -o -dir work" "0" "$rc"
+    assert_exit_code "domains.txt written with a backslash in -o" 0 test -s "${work}/-rel\\001/strings/domains.txt"
+
+    # An existing empty directory is used as is, without chmod.
     mkdir "${work}/shared"
     chmod 755 "${work}/shared"
-    echo "Using symbol library: file:///isf/old-run.json.xz" > "${work}/shared/vol.log"
     PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux -o "${work}/shared" &>/dev/null || true
     assert_eq "existing output dir keeps its mode" "drwxr-xr-x" "$(mode_of "${work}/shared")"
-    assert_contains "re-run reports its own symbols, not the old vol.log's" \
-        "Symbols Used: file:///isf/fake.json.xz" "$(cat "${work}/shared/analysis_summary.txt")"
     assert_eq "files in existing dir are 600" "-rw-------" "$(mode_of "${work}/shared/pslist.txt")"
+    assert_contains "re-run into a used output dir is refused" "not empty" \
+        "$(PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux -o "${work}/shared" 2>&1)"
+
+    # The run keeps writing to the directory it checked, not to whatever is
+    # at that path later.
+    FAKE_SWAP="${work}/swap" PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
+        -o "${work}/swap" &>/dev/null || true
+    assert_exit_code "outputs stay in the directory the run started in" 0 \
+        test -f "${work}/swap.moved/analysis_summary.txt"
+    assert_eq "a directory swapped in mid-run gets nothing" "" "$(ls -A "${work}/swap")"
+
+    # JSON must be UTF-8 (APFS refuses such names, so macOS skips this).
+    local latin="${work}/caf"$'\351'".raw"
+    if cp "$dump" "$latin" 2>/dev/null; then
+        PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$latin" --os linux \
+            -o "${work}/latin" --json &>/dev/null || true
+        assert_exit_code "JSON stays valid for a latin-1 file name" 0 \
+            python3 -m json.tool "${work}/latin/analysis_summary.json"
+    else
+        skip "latin-1 file name (filesystem refuses it)"
+    fi
 
     rc=0
     FAKE_ALL_FAIL=1 PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "$dump" --os linux \
@@ -379,9 +496,16 @@ test_windows_strings() {
         for (( k=0; k<${#s}; k++ )); do printf '%s\0' "${s:k:1}"; done
     } > "${work}/mem.raw"
 
-    PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" --os windows \
-        -o "${work}/out" --extract-strings --dump-registry &>/dev/null || rc=$?
+    # Relative paths: the script changes directory, and vol reads a path
+    # like http:/x as a URL, so vol must get the absolute dump path. An
+    # exported CDPATH must not send the run to another "out".
+    mkdir -p "${work}/decoy/out"
+    (cd "$work" && CDPATH="${work}/decoy" PATH="${work}:${PATH}" with_timeout 60 bash "$SCRIPT" mem.raw \
+        --os windows -o out --extract-strings --dump-registry &>/dev/null) || rc=$?
     assert_eq "windows run exits 0" "0" "$rc"
+    assert_eq "CDPATH is ignored" "" "$(ls -A "${work}/decoy/out")"
+    assert_eq "vol always gets the absolute dump path" "$(wc -l < "${work}/calls" | tr -d ' ')" \
+        "$(grep -c -- '-f /' "${work}/calls")"
     assert_eq "every windows plugin invoked" "32" "$(grep -cE ' windows\.[a-z.]+$' "${work}/calls")"
     assert_contains "registry dump keeps hivelist plugin output" "init" "$(cat "${work}/out/registry_hivelist.txt")"
     assert_contains "registry dump index written" "File output" "$(cat "${work}/out/registry_dump_index.txt")"
@@ -389,7 +513,7 @@ test_windows_strings() {
     if strings -e l /dev/null &>/dev/null; then
         assert_contains "IOC: UTF-16LE domain extracted" "wide.example.net" "$(cat "${work}/out/strings/domains.txt")"
     else
-        pass "IOC: UTF-16LE extraction n/a (strings has no -e l on this platform)"
+        skip "UTF-16LE extraction (strings has no -e l on this platform)"
     fi
 
     rm -rf "$work"
@@ -442,6 +566,15 @@ test_completion() {
         "//github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json" "$got"
 }
 
+# Prefix that runs a command with SIGINT at its default: a background job
+# ignores it (when started from a non-interactive shell) and bash cannot
+# undo that, so the script's INT-first shutdown would not be tested. Python
+# ignores SIGPIPE and SIGXFSZ, so those are reset too. An array, not a
+# function: `func &` forks a subshell, and $! would not be the script.
+WITH_SIGINT=(python3 -c 'import os, signal, sys
+for s in (signal.SIGINT, signal.SIGPIPE, signal.SIGXFSZ): signal.signal(s, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])')
+
 # Start the script against a vol that never finishes, SIGTERM it once
 # $1 vols are running, and check it exits promptly without leaving any behind.
 check_sigterm() {
@@ -451,8 +584,9 @@ check_sigterm() {
     make_fake_vol "$work" slow
     : > "${work}/mem.raw"
     : > "${work}/pids"
+    : > "${work}/sigs"
 
-    PATH="${work}:${PATH}" bash "$SCRIPT" "${work}/mem.raw" -o "${work}/out" "$@" &>/dev/null &
+    PATH="${work}:${PATH}" "${WITH_SIGINT[@]}" bash "$SCRIPT" "${work}/mem.raw" -o "${work}/out" "$@" &>/dev/null &
     pid=$!
     for _ in $(seq 1 50); do
         (( $(wc -l < "${work}/pids") >= expect )) && break
@@ -460,14 +594,18 @@ check_sigterm() {
     done
     sleep 1  # let a broken scheduler try to launch more
     kill -TERM "$pid"
-    # A script that ignores TERM gets SIGKILLed after 5s (exit 137 → fail).
-    for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    # A script that ignores TERM gets SIGKILLed after 10s (exit 137 → fail);
+    # it gives vol 2s to exit, then sends INT.
+    for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
     kill -9 "$pid" 2>/dev/null || true
     wait "$pid" || rc=$?
     sleep 0.5
 
     assert_eq "${label}: SIGTERM exits 143" "143" "$rc"
     assert_eq "${label}: nothing launched after SIGTERM" "$expect" "$(wc -l < "${work}/pids" | tr -d ' ')"
+    # On INT, not TERM, vol runs its `finally` blocks (deletes a symbol file
+    # it was still downloading).
+    assert_eq "${label}: vol is stopped with SIGINT" "INT" "$(sort -u "${work}/sigs")"
     while read -r p; do
         if kill -0 "$p" 2>/dev/null; then alive=$(( alive + 1 )); kill "$p"; fi
     done < "${work}/pids"
@@ -480,6 +618,56 @@ test_termination() {
     printf '\n\033[1mtermination\033[0m\n'
     check_sigterm "plugin run" 2 --os linux -j 2
     check_sigterm "OS auto-detect" 1
+
+    # A probe that times out gets SIGINT too, and the next probe runs.
+    if command -v timeout &>/dev/null || command -v gtimeout &>/dev/null; then
+        local work out
+        work=$(mktemp -d)
+        make_fake_vol "$work" slow
+        : > "${work}/mem.raw"
+        out=$(VOL_DETECT_TIMEOUT=2 FAKE_ONLY_HANG=windows.info PATH="${work}:${PATH}" \
+            with_timeout 60 bash "$SCRIPT" "${work}/mem.raw" -o "${work}/out" 2>&1) || true
+        assert_contains "probe timeout reported" "timed out after 2s" "$out"
+        assert_eq "a timed-out probe gets SIGINT" "INT" "$(cat "${work}/sigs")"
+        assert_contains "the next probe runs after a timeout" "Detected: linux" "$out"
+        rm -rf "$work"
+    else
+        skip "probe timeout signal (no timeout/gtimeout)"
+    fi
+
+    # Ctrl-C ends the script by SIGINT, not exit 130, so a calling shell
+    # loop stops too (Python reports death by SIGINT as -2).
+    work=$(mktemp -d)
+    make_fake_vol "$work" slow
+    : > "${work}/mem.raw"
+    out=$(PATH="${work}:${PATH}" python3 -c 'import signal, subprocess, sys, time
+p = subprocess.Popen(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(3)
+p.send_signal(signal.SIGINT)
+print(p.wait(timeout=20))' bash "$SCRIPT" "${work}/mem.raw" --os linux -o "${work}/out") || true
+    assert_eq "SIGINT ends the script by SIGINT" "-2" "$out"
+    rm -rf "$work"
+
+    # strings and fold are both jobs: none is left reading the dump.
+    local work pid p alive=0
+    work=$(mktemp -d)
+    make_fake_vol "$work"
+    : > "${work}/mem.raw"
+    mkdir "${work}/bin"
+    printf '#!/bin/sh\necho "$$" >> "%s/spids"\nexec sleep 30\n' "$work" > "${work}/bin/strings"
+    chmod +x "${work}/bin/strings"
+    PATH="${work}/bin:${work}:${PATH}" "${WITH_SIGINT[@]}" bash "$SCRIPT" "${work}/mem.raw" --os linux -o "${work}/out" \
+        --extract-strings &>/dev/null &
+    pid=$!
+    for _ in $(seq 1 50); do [[ -s "${work}/spids" ]] && break; sleep 0.2; done
+    kill -TERM "$pid"
+    wait "$pid" || true
+    sleep 0.5
+    while read -r p; do
+        if kill -0 "$p" 2>/dev/null; then alive=$(( alive + 1 )); kill "$p"; fi
+    done < "${work}/spids"
+    assert_eq "no strings process left after SIGTERM" "0" "$alive"
+    rm -rf "$work"
 }
 
 # ─── Tests: script quality ───────────────────────────────────────────────────

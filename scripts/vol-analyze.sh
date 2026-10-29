@@ -15,6 +15,9 @@
 
 set -euo pipefail
 IFS=$'\n\t'
+# cd into a relative path must not search CDPATH (main() enters the output
+# directory by its relative name).
+unset CDPATH
 # Output holds credential material (hashdump, lsadump): files 600, dirs 700,
 # even inside a pre-existing output directory.
 umask 077
@@ -76,7 +79,7 @@ ${BOLD}ARGUMENTS${NC}
 
 ${BOLD}OPTIONS${NC}
         --os TYPE               Target OS: windows, linux, mac, auto (default: auto)
-    -o, --output DIR            Output directory (default: ${DEFAULT_OUTPUT_DIR})
+    -o, --output DIR            New or empty output directory (default: ${DEFAULT_OUTPUT_DIR})
     -j, --jobs N                Max parallel plugins (default: ${DEFAULT_MAX_PARALLEL})
         --symbols DIR           Extra Volatility 3 symbol directory (Linux/macOS ISF files)
         --isf-url URL           Remote ISF index to look up kernel symbols (https:// or file://)
@@ -127,6 +130,10 @@ JSON_OUTPUT=false
 INTERACTIVE=false
 SYMBOL_DIR=""
 ISF_URL=""
+# main() works inside the output directory (OUTPUT_DIR becomes "."):
+# OUTPUT_PATH is its absolute path, for messages and reports.
+OUTPUT_PATH=""
+TLDS_FILE=""
 # Options for every vol call. -q keeps progress bars out of .err, so a
 # non-empty .err means real warnings.
 VOL_OPTS=(-q)
@@ -147,9 +154,9 @@ parse_args() {
             --json)               JSON_OUTPUT=true; shift ;;
             --interactive)        INTERACTIVE=true; shift ;;
             --no-color)           NO_COLOR=1; setup_colors; shift ;;
-            -*)                   fatal "Unknown option: $1 (use --help)" ;;
+            -*)                   fatal "Unknown option: $(printf '%q' "$1") (use --help)" ;;
             *)
-                [[ -z "$MEMORY_DUMP" ]] || fatal "Unexpected argument: $1"
+                [[ -z "$MEMORY_DUMP" ]] || fatal "Unexpected argument: $(printf '%q' "$1")"
                 MEMORY_DUMP="$1"; shift
                 ;;
         esac
@@ -158,17 +165,51 @@ parse_args() {
 
 # ─── Validation ──────────────────────────────────────────────────────────────
 
+# Control characters (C0, DEL, C1 in UTF-8) would forge lines in the text
+# report and reach the terminal raw (escape sequences); vol splits -s on ';'
+# and newlines. Checked on the arguments, and again on the resolved paths: a
+# symlinked parent directory can carry them in its target.
+reject_cntrl() {
+    local LC_ALL=C s
+    printf -v s '%s' "$@"
+    if [[ "$s" == *[[:cntrl:]]* || "$s" == *$'\xc2'[$'\x80'-$'\x9f']* ]]; then
+        fatal "Arguments, paths and URLs must not contain control characters"
+    fi
+}
+
+# Output directories that must never be written to, as physical absolute
+# paths. /var and /run subtrees stay allowed: /var/tmp, macOS $TMPDIR
+# (/var/folders) and udisks evidence-drive mounts (/run/media/$USER). On
+# macOS /etc and /var are symlinks into /private.
+system_dir() {
+    case "$1" in
+        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/var|/lib|/lib/*|/run|/private|/private/etc|/private/etc/*|/private/var)
+            return 0 ;;
+    esac
+    return 1
+}
+
 validate() {
     [[ -z "$MEMORY_DUMP" ]] && fatal "No memory dump specified. Usage: ${SCRIPT_NAME} <memory_dump> [options]"
+    reject_cntrl "$MEMORY_DUMP" "$OUTPUT_DIR" "$SYMBOL_DIR" "$ISF_URL" "$TARGET_OS" "$MAX_PARALLEL" \
+        "$VOL" "$DETECT_TIMEOUT_SECS"
     [[ -f "$MEMORY_DUMP" ]]  || fatal "File not found: ${MEMORY_DUMP}"
     [[ -r "$MEMORY_DUMP" ]]  || fatal "File not readable: ${MEMORY_DUMP}"
     [[ -L "$MEMORY_DUMP" ]]  && fatal "Refusing to follow symlink: ${MEMORY_DUMP} — pass the real path"
+    # Absolute: main() changes directory, and vol reads a relative path whose
+    # first part looks like a URL scheme (http:/host/mem.raw) as a URL.
+    MEMORY_DUMP=$(resolve_path "$MEMORY_DUMP")
+    reject_cntrl "$MEMORY_DUMP"
 
     command -v "$VOL" &>/dev/null || fatal "Volatility 3 (${VOL}) not found in PATH. Install: https://github.com/volatilityfoundation/volatility3"
+    # Absolute too (VOL3_CMD=./vol, a relative PATH entry): main() changes
+    # directory.
+    VOL=$(command -v "$VOL")
+    [[ "$VOL" == /* ]] || VOL="${PWD}/${VOL}"
 
     # Validate that VOL resolves to an expected binary name
     local vol_base
-    vol_base=$(basename "$(command -v "$VOL")")
+    vol_base=$(basename "$VOL")
     case "$vol_base" in
         vol|vol3|volatility3|vol.py) ;;
         *) fatal "VOL3_CMD resolves to unexpected binary '${vol_base}' — expected vol, vol3, volatility3, or vol.py" ;;
@@ -179,23 +220,26 @@ validate() {
         *) fatal "Invalid --os value: ${TARGET_OS} (must be: windows, linux, mac, auto)" ;;
     esac
 
-    # Reject dangerous output paths, compared in resolved absolute form:
-    # the directory itself if it exists (catches /, /etc/, /tmp/..), else its
-    # parent; if neither exists (e.g. /proc on macOS) the literal argument.
-    # /var and /run subtrees stay allowed: /var/tmp, macOS $TMPDIR
-    # (/var/folders) and udisks evidence-drive mounts (/run/media/$USER).
-    local resolved_output abs_parent
-    if resolved_output=$(cd -- "$OUTPUT_DIR" 2>/dev/null && pwd); then
-        :
-    elif abs_parent=$(cd -- "$(dirname -- "$OUTPUT_DIR")" 2>/dev/null && pwd); then
-        resolved_output="${abs_parent%/}/$(basename -- "$OUTPUT_DIR")"
-    else
-        resolved_output="$OUTPUT_DIR"
+    # Reject system directories before mkdir -p creates anything: the path
+    # as it will resolve, i.e. its nearest existing ancestor in physical form
+    # (catches /tmp/../etc, a symlink to /etc, etclink/a/b) plus the parts
+    # still to be created. main() checks again once inside.
+    [[ "$OUTPUT_DIR" != -* ]] || OUTPUT_DIR="./${OUTPUT_DIR}"   # not an option to mkdir/cd
+    local dir="$OUTPUT_DIR" rest="" resolved_output
+    until resolved_output=$(cd -P -- "$dir" 2>/dev/null && pwd -P); do
+        [[ "$dir" != "$(dirname -- "$dir")" ]] || fatal "Cannot resolve output directory: ${OUTPUT_DIR}"
+        # ponytail: refused, not resolved; new/../../etc/x cannot be
+        # resolved before mkdir creates new.
+        [[ "$(basename -- "$dir")" != .. ]] \
+            || fatal "Output directory path has '..' after a directory that does not exist yet: ${OUTPUT_DIR}"
+        rest="/$(basename -- "$dir")${rest}"
+        dir=$(dirname -- "$dir")
+    done
+    [[ -z "$rest" ]] || resolved_output="${resolved_output%/}${rest}"
+    reject_cntrl "$resolved_output"
+    if system_dir "$resolved_output"; then
+        fatal "Refusing to use system directory as output: ${OUTPUT_DIR}"
     fi
-    case "$resolved_output" in
-        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/var|/lib|/lib/*|/run)
-            fatal "Refusing to use system directory as output: ${OUTPUT_DIR}" ;;
-    esac
 
     # 10# forces base 10: bare "08" is an invalid octal literal in (( )).
     if ! [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] || (( 10#$MAX_PARALLEL < 1 )); then
@@ -208,16 +252,13 @@ validate() {
 
     # vol splits -s on ';', so the check runs on the resolved path. Plain
     # http is refused (vol itself still retries https without certificate
-    # checks; a local --symbols dir is the tamper-proof option). Newlines
-    # would forge lines in the text report.
+    # checks; a local --symbols dir is the tamper-proof option).
     VOL_OPTS=(-q)
-    if [[ "$SYMBOL_DIR$ISF_URL" == *[$'\n\r']* ]]; then
-        fatal "--symbols / --isf-url must not contain line breaks"
-    fi
     if [[ -n "$SYMBOL_DIR" ]]; then
         [[ -d "$SYMBOL_DIR" ]] || fatal "Symbols directory not found: ${SYMBOL_DIR}"
         [[ "$SYMBOL_DIR" == /* ]] || SYMBOL_DIR="./${SYMBOL_DIR}"   # keep "-dir" from parsing as an option
         SYMBOL_DIR=$(resolve_path "$SYMBOL_DIR")
+        reject_cntrl "$SYMBOL_DIR"
         [[ "$SYMBOL_DIR" == *";"* ]] && fatal "Symbols directory path must not contain ';': ${SYMBOL_DIR}"
         VOL_OPTS+=(-s "$SYMBOL_DIR")
     fi
@@ -267,12 +308,30 @@ file_size_bytes() {
     stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo "0"
 }
 
+# Start an external command as a background job (pid in $!). Unlike a
+# plain `cmd &`, it does not ignore SIGINT, so cleanup() can stop it the way
+# vol cleans up after itself (see cleanup()). Its stdin is /dev/null even
+# with `start_job cmd < file`; output redirections on the call do apply.
+start_job() {
+    ( trap - INT; exec "$@" ) &
+}
+
 # Run an external command as a background job and wait for it. Unlike a
 # foreground command, `wait` returns as soon as an INT/TERM trap fires, and
-# cleanup() then finds the command via `jobs -p` and kills it.
+# cleanup() then finds the command via `jobs -p` and stops it.
 run_job() {
-    "$@" &
+    start_job "$@"
     wait $!
+}
+
+# jobs_gone <tenths of a second> <pid>...: true once all have exited.
+jobs_gone() {
+    local n="$1"; shift
+    while (( n-- > 0 )); do
+        kill -0 "$@" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    ! kill -0 "$@" 2>/dev/null
 }
 
 # Human-readable byte size (portable: avoids GNU numfmt dependency on macOS).
@@ -294,9 +353,13 @@ human_size() {
     printf '%d%s\n' "$val" "${units[$idx]}"
 }
 
-# JSON RFC 8259 §7 string escaper.
+# JSON RFC 8259 §7 string escaper. JSON must be UTF-8: a path with other
+# bytes (latin-1 file names) is written shell-quoted instead ($'caf\351').
 json_escape() {
     local s="$1"
+    if command -v iconv &>/dev/null && ! iconv -f UTF-8 -t UTF-8 <<< "$s" &>/dev/null; then
+        printf -v s '%q' "$s"
+    fi
     s="${s//\\/\\\\}"
     s="${s//\"/\\\"}"
     s="${s//$'\n'/\\n}"
@@ -319,21 +382,35 @@ json_escape() {
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 
+# Jobs are stopped with SIGINT, and TERM only if they are still running 5 s
+# later: on INT vol runs its `finally` blocks, which delete a symbol file it
+# was still downloading (see detect_os); on TERM it leaves a broken one in
+# its cache for every later run. A Ctrl-C in the terminal has already
+# reached them (not vol under timeout, which has its own process group), and
+# a second INT could cut a `finally` short, so they get 2 s to exit first.
 cleanup() {
     local pids
     pids=$(jobs -p 2>/dev/null) || true
     if [[ -n "$pids" ]]; then
         printf "\n"
-        warn "Interrupted — killing background jobs..."
+        warn "Interrupted — stopping background jobs..."
         # shellcheck disable=SC2086 # word-split is intentional
-        kill $pids 2>/dev/null || true
+        jobs_gone 20 $pids || { kill -INT $pids 2>/dev/null; jobs_gone 50 $pids; } \
+            || kill $pids 2>/dev/null || true
         wait 2>/dev/null || true
+    fi
+    if [[ -n "${FIFO_DIR:-}" ]]; then
+        rm -f -- "${FIFO_DIR}/strings"
+        rmdir -- "$FIFO_DIR" 2>/dev/null || true
     fi
 }
 # INT/TERM must exit (which fires the EXIT trap); a handler that returns
-# lets the scheduler loop resume and launch the remaining plugins.
+# lets the scheduler loop resume and launch the remaining plugins. On INT
+# the script then ends by SIGINT itself: a calling shell loop
+# (for f in *.raw; do vol-analyze "$f"; done) stops only then, while exit
+# status 130 tells it the interrupt was handled.
 trap cleanup EXIT
-trap 'exit 130' INT
+trap 'cleanup; trap - INT EXIT; kill -INT $$' INT
 trap 'exit 143' TERM
 
 # ─── OS Detection ────────────────────────────────────────────────────────────
@@ -344,11 +421,16 @@ readonly DETECT_TIMEOUT_SECS="${VOL_DETECT_TIMEOUT:-60}"
 # handled at once instead of after the remaining probes.
 detect_os() {
     # GNU timeout, or gtimeout from Homebrew coreutils; exit 124 on timeout.
+    # SIGINT, not TERM: vol creates the Windows symbol file before it
+    # downloads the PDB and deletes it on failure in a `finally`, which runs
+    # on KeyboardInterrupt but not on TERM. A probe killed mid-download would
+    # leave a broken ISF in vol's symbol directory for every later run.
+    # -k: KILL if INT is ignored.
     local -a timer=()
     if command -v timeout &>/dev/null; then
-        timer=(timeout "$DETECT_TIMEOUT_SECS")
+        timer=(timeout -s INT -k 10 "$DETECT_TIMEOUT_SECS")
     elif command -v gtimeout &>/dev/null; then
-        timer=(gtimeout "$DETECT_TIMEOUT_SECS")
+        timer=(gtimeout -s INT -k 10 "$DETECT_TIMEOUT_SECS")
     fi
     if (( ${#timer[@]} > 0 )); then
         info "Auto-detecting OS from memory dump (${DETECT_TIMEOUT_SECS}s timeout per probe)..."
@@ -397,11 +479,11 @@ compute_checksums() {
     fi
 
     if (( ${#md5_cmd[@]} > 0 )); then
-        "${md5_cmd[@]}" < "$MEMORY_DUMP" > "$md5_tmp" 2>/dev/null &
+        ( trap - INT; exec "${md5_cmd[@]}" < "$MEMORY_DUMP" > "$md5_tmp" 2>/dev/null ) &
         md5_pid=$!
     fi
     if (( ${#sha256_cmd[@]} > 0 )); then
-        "${sha256_cmd[@]}" < "$MEMORY_DUMP" > "$sha256_tmp" 2>/dev/null &
+        ( trap - INT; exec "${sha256_cmd[@]}" < "$MEMORY_DUMP" > "$sha256_tmp" 2>/dev/null ) &
         sha256_pid=$!
     fi
 
@@ -566,7 +648,7 @@ run_all_plugins() {
 
     header "Analyzing ${TARGET_OS} dump — ${total} plugins (${MAX_PARALLEL} parallel)"
 
-    # vol runs as a direct child (no subshell wrapper) so cleanup()'s
+    # vol runs as a direct child (start_job execs it) so cleanup()'s
     # `kill $(jobs -p)` reaches it. The `${arr[@]+"${arr[@]}"}` idiom
     # on `survivors` is the bash-`set -u`-safe way to expand a possibly-empty
     # array.
@@ -577,17 +659,15 @@ run_all_plugins() {
     # each other's half-written cache files and fail (JSONDecodeError).
     # It also writes vol's debug log, which names the symbol file vol really
     # used: a remote ISF it cached on an earlier run counts even without -u.
-    # vol appends to the log, so an earlier run's log is removed first.
     local i=0 plugin sname pid slots=1
     local -a log_opt=(-l "${OUTPUT_DIR}/vol.log")
-    rm -f -- "${OUTPUT_DIR}/vol.log"
 
     while (( i < total )) || (( ${#active_pids[@]} > 0 )); do
         while (( ${#active_pids[@]} < slots )) && (( i < total )); do
             plugin="${PLUGINS[$i]}"
             sname=$(safe_name "$plugin")
-            "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" ${log_opt[@]+"${log_opt[@]}"} "$plugin" \
-                > "${OUTPUT_DIR}/${sname}.txt" 2> "${OUTPUT_DIR}/${sname}.err" &
+            start_job "$VOL" "${VOL_OPTS[@]}" -f "$MEMORY_DUMP" ${log_opt[@]+"${log_opt[@]}"} "$plugin" \
+                > "${OUTPUT_DIR}/${sname}.txt" 2> "${OUTPUT_DIR}/${sname}.err"
             pid=$!
             log_opt=()
             pid_plugin[$pid]="$plugin"
@@ -646,6 +726,29 @@ run_all_plugins() {
 
 # ─── IOC String Extraction ──────────────────────────────────────────────────
 
+# strings, folded at 8 KiB (busybox fold allows up to 10000): grep and sed
+# hold a whole line in memory, and an image can hold a printable run of
+# gigabytes. Both are jobs of this shell, so cleanup() stops both; it fails
+# if either fails. They are joined by a FIFO in a private temporary
+# directory (the output directory can be on exFAT, which has none). The
+# redirections run inside the jobs: opening a FIFO blocks until the other
+# end opens.
+FIFO_DIR=""
+strings_folded() {
+    local spid rc=0
+    FIFO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vol-analyze.XXXXXX") || return
+    mkfifo "${FIFO_DIR}/strings" || { rmdir -- "$FIFO_DIR"; FIFO_DIR=""; return 1; }
+    ( trap - INT; exec strings -a -n 6 "$@" > "${FIFO_DIR}/strings" ) &
+    spid=$!
+    ( trap - INT; exec fold -b -w 8192 < "${FIFO_DIR}/strings" ) &
+    wait $! || rc=$?
+    wait "$spid" || rc=$?
+    rm -f -- "${FIFO_DIR}/strings"
+    rmdir -- "$FIFO_DIR"
+    FIFO_DIR=""
+    return "$rc"
+}
+
 extract_strings() {
     header "Extracting IOC strings"
 
@@ -653,14 +756,21 @@ extract_strings() {
     mkdir -p "$strings_dir"
 
     info "Running strings on memory dump (this may take a while for large dumps)..."
-    if ! run_job strings -a -n 6 "$MEMORY_DUMP" > "${strings_dir}/all.txt" 2>/dev/null; then
+    local rc=0
+    strings_folded "$MEMORY_DUMP" > "${strings_dir}/all.txt" 2>/dev/null || rc=$?
+    if [[ ! -s "${strings_dir}/all.txt" ]]; then
         warn "strings command failed or produced no output"
         return
     fi
+    (( rc == 0 )) || warn "strings exited with status ${rc} — all.txt may be incomplete"
     # Windows stores most paths, URLs and registry data as UTF-16LE.
     if [[ "$TARGET_OS" == "windows" ]]; then
-        run_job strings -a -n 6 -e l "$MEMORY_DUMP" >> "${strings_dir}/all.txt" 2>/dev/null \
-            || warn "strings lacks -e l (GNU binutils) — UTF-16LE strings skipped"
+        if strings -e l /dev/null &>/dev/null; then
+            strings_folded -e l "$MEMORY_DUMP" >> "${strings_dir}/all.txt" 2>/dev/null \
+                || warn "strings -e l failed — UTF-16LE strings may be incomplete"
+        else
+            warn "strings lacks -e l (GNU binutils) — UTF-16LE strings skipped"
+        fi
     fi
 
     local total_strings
@@ -695,53 +805,74 @@ extract_strings() {
         | sort -u > "${strings_dir}/emails.txt" 2>/dev/null || true
 
     # Domains: RFC 1035 labels ending in an IANA TLD, counted lower-cased.
-    # All-caps names need 3+ labels and a 2-3 letter TLD (LOGIN.LIVE.COM):
-    # shorter ones are Defender signatures (Exploit:O97M/CVE-2017-0199.AL),
-    # COMMAND.COM or .NET namespaces. Also dropped as noise seen in real dumps:
-    #   - minified JS: e.target, t.data, Date.now, this.data (one-letter
-    #     names stay on .com/.net/.org/.me: x.org, t.me)
-    #   - closed brand TLDs that clash with code names: microsoft.windows,
-    #     rela.data, wscript.shell
-    #   - ELF section and GNU tar header names, by exact name:
-    #     note.gnu.build(-id), data.rel.ro, gnu.linkonce.lr, rela.got,
-    #     text.hot, GNU.sparse.map
-    # Rules on a first label (JS globals) apply to 2-label names only:
-    # malware picks its own subdomains, so self.c2.top or text.c2.net stay.
+    # Names that look like code or file names go to domains_lowconf.txt, so
+    # a host an attacker picks to look like one (evil.app, navigator.top,
+    # 4444.top) is never lost; only names that cannot be registered (no
+    # IANA TLD, closed brand TLDs such as .windows) are dropped. Low
+    # confidence, all seen as noise in real dumps:
+    #   - all-caps names with 2 labels or a TLD over 3 letters: Defender
+    #     signatures (Exploit:O97M/CVE-2017-0199.AL), COMMAND.COM
+    #     (LOGIN.LIVE.COM stays a domain)
+    #   - mixed-case TLDs: .NET names (System.IO); a name the TLD case cut
+    #     short is kept (payload.example.com.EXE -> payload.example.com)
+    #   - minified JS: this.id, t.name (one-letter names stay domains on
+    #     .com/.net/.org/.me: x.org, t.me; e.target and Date.now end in brand
+    #     TLDs). Rules on a first label apply to 2-label names only:
+    #     self.c2.top stays a domain.
+    #   - all-numeric names (0.9.18.2.top), ELF section and GNU tar header
+    #     names by exact name (note.gnu.build, data.rel.ro, GNU.sparse.map)
     #   - on TLDs that are also file extensions, file names (run.sh,
     #     libfoo-2.0.so, CMD.EXE-CD245F9E.pf) but not hosts (c2.evil.sh)
-    # URL escapes (%2F, %252F, backslash-u002F) are blanked first so they
-    # don't glue onto names.
-    # The list lives in <prefix>/share/volatility-toolkit (scripts/../share in
-    # a checkout); refresh it with `make update-tlds`, then `make install`.
-    local self tlds
-    self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null) || self="${BASH_SOURCE[0]}"
-    tlds="$(dirname "$self")/../share/volatility-toolkit/tlds.txt"
-    if [[ -s "$tlds" ]]; then
-        LC_ALL=C sed -E 's/%(25)*[0-9A-Fa-f]{2}|\\(u00|x)[0-9A-Fa-f]{2}/ /g' "${strings_dir}/all.txt" \
-            | LC_ALL=C grep -oE \
-                -e '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})\b' \
-                -e '\b([A-Z0-9]([A-Z0-9-]{0,61}[A-Z0-9])?\.){2,}[A-Z]{2,63}\b' \
-            | LC_ALL=C awk -F. -v ext="app ax cab cat ci ht java la map md mo mov ms page pf pid pl pm properties ps py rs sh so zip" \
+    # Reverse-DNS identifiers (com.apple.audio, a third of all hits on a macOS
+    # dump) go to reverse_dns.txt. URL escapes (%2F, %252F, backslash-u002F)
+    # are blanked first so they don't glue onto names, and so are
+    # underscores ending a word or before a number (c2.evil.top_,
+    # c2.evil.top_443). Before letters they stay: that is an identifier
+    # (browser_win.cc is no win.cc, koadic.work.make_url no koadic.work.make).
+    # Output files are passed through ENVIRON: awk -v decodes backslashes.
+    if [[ -s "$TLDS_FILE" ]]; then
+        LC_ALL=C sed -E 's/%(25)*[0-9A-Fa-f]{2}|\\(u00|x)[0-9A-Fa-f]{2}/ /g; s/_+([^_A-Za-z0-9]|$)/ \1/g; s/_+([0-9]+([^_A-Za-z0-9.-]|$))/ \1/g' "${strings_dir}/all.txt" \
+            | LC_ALL=C grep -oE '\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+([a-zA-Z]{2,63}|[xX][nN]--[a-zA-Z0-9-]{1,59})\b' \
+            | RDNS="${strings_dir}/.reverse_dns" LOWCONF="${strings_dir}/.domains_lowconf" LC_ALL=C awk -F. \
+                -v ext="app ax cab cat ci ht java la map md mo mov ms page pf pid pl pm properties ps py rs sh so zip" \
                 -v brand="azure bing call data microsoft next now office search shell skype target windows xbox" \
                 -v js="this self window document globalThis Date Math Object Array JSON Promise Symbol Number String Reflect Function console navigator location" '
+                function low(s,   n, p) {
+                    s = tolower(s); n = split(s, p, ".")
+                    if ((p[n] in tld) && !(p[n] in is_brand)) print s > lowconf
+                }
                 BEGIN {
                     n = split(ext, w, " "); for (i = 1; i <= n; i++) is_ext[w[i]]
                     n = split(brand, w, " "); for (i = 1; i <= n; i++) is_brand[w[i]]
                     n = split(js, w, " "); for (i = 1; i <= n; i++) is_js[w[i]]
+                    rdns = ENVIRON["RDNS"]; lowconf = ENVIRON["LOWCONF"]
                 }
                 NR == FNR { if ($0 !~ /^#/) tld[tolower($0)]; next }
-                !/[a-z]/ && length($NF) > 3 { next }
-                ($1 in is_js) && NF == 2 { next }
-                NF == 2 && length($1) == 1 && $NF !~ /^(com|net|org|me)$/ { next }
+                !/[a-z]/ && (NF == 2 || length($NF) > 3) { low($0); next }
+                /[a-z]/ && $NF !~ /^([a-z]+|xn--[a-z0-9-]+)$/ {
+                    low($0)
+                    while (NF > 1 && $NF !~ /^([a-z]+|xn--[a-z0-9-]+)$/) sub(/\.[^.]*$/, "")
+                    if (NF < 2) next
+                }
+                ($1 in is_js) && NF == 2 { low($0); next }
+                NF == 2 && length($1) == 1 && $NF !~ /^(com|net|org|me)$/ { low($0); next }
                 { file_case = substr($0, 1, length($0) - length($NF)) !~ /[a-z]/; $0 = tolower($0) }
-                !($NF in tld) || ($NF in is_brand) || /^[0-9.]+\.[a-z]+$/ { next }
-                /^((note\.)?gnu\.build|note\.gnu\.(gold|property)|text\.hot|rela?\.got|gnu\.sparse\.(map|name))$/ { next }
-                /^(rela?\.)?(gnu\.linkonce\.[a-z][a-z]?(\.rel\.ro)?|l?data\.rel\.ro|rel\.ro)$/ { next }
-                ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/ || file_case) { next }
-                { print }' "$tlds" - \
+                !($NF in tld) || ($NF in is_brand) { next }
+                /^[0-9.]+\.[a-z]+$/ { low($0); next }
+                /^((note\.)?gnu\.build|note\.gnu\.(gold|property)|text\.hot|rela?\.got|gnu\.sparse\.(map|name))$/ { low($0); next }
+                /^(rela?\.)?(gnu\.linkonce\.[a-z][a-z]?(\.rel\.ro)?|l?data\.rel\.ro|rel\.ro)$/ { low($0); next }
+                ($NF in is_ext) && (NF == 2 || $(NF - 1) ~ /^[0-9]+$/ || file_case) { low($0); next }
+                $1 ~ /^(com|org|net)$/ { print > rdns; next }
+                { print }' "$TLDS_FILE" - \
             | sort | uniq -c | sort -rn > "${strings_dir}/domains.txt" 2>/dev/null || true
+        local f
+        for f in reverse_dns domains_lowconf; do
+            LC_ALL=C sort "${strings_dir}/.${f}" 2>/dev/null | uniq -c | sort -rn \
+                > "${strings_dir}/${f}.txt" || true
+            rm -f "${strings_dir}/.${f}"
+        done
     else
-        warn "TLD list not found at ${tlds} — skipping domains.txt"
+        warn "TLD list not found at ${TLDS_FILE} — skipping domains.txt"
     fi
 
     local path_categories=()
@@ -760,14 +891,14 @@ extract_strings() {
     esac
 
     echo ""
-    for category in ipv4 urls emails domains "${path_categories[@]}"; do
+    for category in ipv4 urls emails domains domains_lowconf reverse_dns "${path_categories[@]}"; do
         local count=0
         [[ -f "${strings_dir}/${category}.txt" ]] && count=$(wc -l < "${strings_dir}/${category}.txt")
         printf '  %b%-20s%b %d unique entries\n' "${CYAN}" "$category" "${NC}" "$count"
     done
 
     echo ""
-    success "Strings extracted to ${strings_dir}/"
+    success "Strings extracted to ${OUTPUT_PATH}/strings/"
 }
 
 # ─── File Dumping (Windows only) ─────────────────────────────────────────────
@@ -787,7 +918,7 @@ dump_files() {
     if run_job "$VOL" "${VOL_OPTS[@]}" -o "$dump_dir/" -f "$MEMORY_DUMP" windows.dumpfiles > "${OUTPUT_DIR}/dumpfiles_index.txt" 2>"${OUTPUT_DIR}/dumpfiles.err"; then
         local count
         count=$(find "$dump_dir" -type f 2>/dev/null | wc -l)
-        success "Dumped ${count} files to ${dump_dir}/"
+        success "Dumped ${count} files to ${OUTPUT_PATH}/dump_files/"
     else
         warn "windows.dumpfiles completed with errors (check dumpfiles.err)"
     fi
@@ -811,7 +942,7 @@ dump_registry() {
             > "${OUTPUT_DIR}/registry_dump_index.txt" 2>"${OUTPUT_DIR}/registry_dump.err"; then
         local count
         count=$(find "$reg_dir" -type f 2>/dev/null | wc -l)
-        success "Dumped ${count} registry hives to ${reg_dir}/"
+        success "Dumped ${count} registry hives to ${OUTPUT_PATH}/registry_dump/"
         info "Analyze offline with RegRipper, Registry Explorer, or regipy"
     else
         warn "Registry dump had errors (check registry_dump.err)"
@@ -834,13 +965,13 @@ generate_text_report() {
 	═══════════════════════════════════════════════════════════════
 
 	Target OS   : ${TARGET_OS}
-	Memory Dump : $(resolve_path "$MEMORY_DUMP")
+	Memory Dump : ${MEMORY_DUMP}
 	File Size   : ${file_size} bytes
 	MD5         : ${CHECKSUM_MD5:-N/A}
 	SHA256      : ${CHECKSUM_SHA256:-N/A}
 	Date (UTC)  : ${analysis_date}
 	Duration    : ${ANALYSIS_DURATION}s
-	Output Dir  : $(resolve_path "$OUTPUT_DIR")
+	Output Dir  : ${OUTPUT_PATH}
 	Symbols Dir : ${SYMBOL_DIR:-none}
 	ISF URL     : ${ISF_URL:-none}
 	Symbols Used: ${SYMBOLS_USED:-unknown}
@@ -865,7 +996,7 @@ generate_text_report() {
 	═══════════════════════════════════════════════════════════════
 	REPORT
 
-    success "Text report:  ${report}"
+    success "Text report:  ${OUTPUT_PATH}/${report#./}"
 }
 
 generate_json_report() {
@@ -877,18 +1008,13 @@ generate_json_report() {
     local file_size
     file_size=$(file_size_bytes "$MEMORY_DUMP")
 
-    local dump_path
-    dump_path=$(resolve_path "$MEMORY_DUMP")
-    local out_path
-    out_path=$(resolve_path "$OUTPUT_DIR")
-
     {
         printf '{\n'
         printf '  "version": "%s",\n' "$VERSION"
         printf '  "target_os": "%s",\n' "$TARGET_OS"
         printf '  "analysis_date": "%s",\n' "$analysis_date"
         printf '  "memory_dump": {\n'
-        printf '    "path": "%s",\n' "$(json_escape "$dump_path")"
+        printf '    "path": "%s",\n' "$(json_escape "$MEMORY_DUMP")"
         printf '    "size_bytes": %s,\n' "$file_size"
         printf '    "md5": "%s",\n' "${CHECKSUM_MD5:-}"
         printf '    "sha256": "%s"\n' "${CHECKSUM_SHA256:-}"
@@ -918,11 +1044,11 @@ generate_json_report() {
         done
 
         printf '\n  },\n'
-        printf '  "output_directory": "%s"\n' "$(json_escape "$out_path")"
+        printf '  "output_directory": "%s"\n' "$(json_escape "$OUTPUT_PATH")"
         printf '}\n'
     } > "$report"
 
-    success "JSON report:  ${report}"
+    success "JSON report:  ${OUTPUT_PATH}/${report#./}"
 }
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
@@ -954,22 +1080,34 @@ main() {
     validate
     readonly VOL
 
-    # umask 077 makes a new directory 700. An existing one keeps its mode:
-    # chmod on it (-o /tmp, -o ~) would strip a sticky bit or lock users out.
-    mkdir -p "$OUTPUT_DIR"
+    # The TLD list sits at <prefix>/share/volatility-toolkit beside
+    # <prefix>/bin (scripts/../share in a checkout). Found before the cd.
+    TLDS_FILE="$(dirname -- "$(resolve_path "${BASH_SOURCE[0]}")")/../share/volatility-toolkit/tlds.txt"
 
-    # Checked after mkdir, so a directory another user creates in a shared
-    # parent between validation and mkdir is not adopted. It must be ours and
-    # not group/world-writable, or someone else could pre-create output files
-    # (or symlinks) and receive the hashdump/lsadump results. -H judges a
-    # symlinked dir by its target, not the link's own lrwxrwxrwx mode.
-    local out_abs
-    out_abs=$(cd -- "$OUTPUT_DIR" && pwd)
-    [[ -O "$out_abs" ]] \
-        || fatal "Output directory is not owned by you: ${OUTPUT_DIR} — pick a new directory"
-    if [[ -n "$(find -H "$out_abs" -prune \( -perm -020 -o -perm -002 \))" ]]; then
+    # umask 077 makes a new directory 700. An existing one keeps its mode:
+    # chmod on it (-o /tmp) would strip a sticky bit or lock users out.
+    mkdir -p -- "$OUTPUT_DIR"
+
+    # Work inside the output directory from here on (vol inherits it): a
+    # path is resolved again on every write, so someone who can write to a
+    # parent directory could swap it mid-run and receive the hashdump. The
+    # checks run after mkdir and cd, on the directory actually used: it must
+    # be ours and closed to others, and then empty, so nobody can have
+    # planted files or symlinks in it and no earlier run's results get mixed
+    # with this dump's.
+    cd -P -- "$OUTPUT_DIR" || fatal "Cannot enter output directory: ${OUTPUT_DIR}"
+    OUTPUT_PATH=$(pwd -P)
+    if system_dir "$OUTPUT_PATH"; then
+        fatal "Refusing to use system directory as output: ${OUTPUT_DIR}"
+    fi
+    reject_cntrl "$OUTPUT_PATH"
+    [[ -O . ]] || fatal "Output directory is not owned by you: ${OUTPUT_DIR} — pick a new directory"
+    if [[ -n "$(find . -prune \( -perm -020 -o -perm -002 \))" ]]; then
         fatal "Output directory is writable by group/others: ${OUTPUT_DIR} — chmod go-w it or pick a new directory"
     fi
+    [[ -r . ]] || fatal "Output directory is not readable: ${OUTPUT_DIR} — pick a new directory"
+    [[ -z "$(ls -A)" ]] || fatal "Output directory is not empty: ${OUTPUT_DIR} — pick a new directory"
+    OUTPUT_DIR=.
 
     # ── OS detection ──
     if [[ "$TARGET_OS" == "auto" ]]; then
@@ -987,7 +1125,7 @@ main() {
     human_size_str=$(human_size "$file_size")
 
     info "Memory dump: ${BOLD}${MEMORY_DUMP}${NC} (${human_size_str})"
-    info "Output dir:  ${BOLD}${OUTPUT_DIR}${NC}"
+    info "Output dir:  ${BOLD}${OUTPUT_PATH}${NC}"
     info "Plugins:     ${#PLUGINS[@]} (${TARGET_OS}), ${MAX_PARALLEL} parallel"
 
     # ── Phase 1: Chain of custody ──
@@ -1029,9 +1167,9 @@ main() {
     # Non-zero exit for automation: nothing ran usefully (wrong --os, or no
     # kernel symbols for Linux/macOS).
     if (( PLUGINS_SUCCEEDED == 0 )); then
-        fatal "No plugin succeeded — check --os and, for Linux/macOS, kernel symbols (--symbols / --isf-url; see .err files in ${OUTPUT_DIR}/)"
+        fatal "No plugin succeeded — check --os and, for Linux/macOS, kernel symbols (--symbols / --isf-url; see .err files in ${OUTPUT_PATH}/)"
     fi
-    success "Analysis complete — results in ${BOLD}${OUTPUT_DIR}/${NC}"
+    success "Analysis complete — results in ${BOLD}${OUTPUT_PATH}/${NC}"
 }
 
 # Allow sourcing without auto-running main (used by the test harness).

@@ -1,0 +1,55 @@
+name: Real dumps
+
+# Monthly end-to-end run with the latest Volatility 3 on public memory images,
+# plus a check that the bundled IANA TLD list is current. Catches upstream
+# breakage that the fake-vol tests in lint.yml cannot. Locally: make ci-real.
+# GitHub pauses scheduled workflows after 60 days without repository
+# activity: re-enable it in the Actions tab.
+on:
+  schedule:
+    - cron: '23 5 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-dumps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The images unpack to ~9 GB; drop preinstalled SDKs this job never uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Volatility 3 (latest release)
+        run: pipx install 'volatility3[full]' && vol -h 2>&1 | head -1
+
+      # On failure the script keeps its logs and reports under $TMPDIR. The
+      # step timeout is below the job's, so a hang still uploads the logs.
+      - name: Real-dump test
+        timeout-minutes: 100
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: make real-test
+
+      - name: Upload logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: real-dump-logs
+          path: |
+            ${{ runner.temp }}/vol-real.*/*.log
+            ${{ runner.temp }}/vol-real.*/out-*/*.err
+            ${{ runner.temp }}/vol-real.*/out-*/vol.log
+            ${{ runner.temp }}/vol-real.*/out-*/analysis_summary.*
+
+      - name: TLD list up to date
+        if: always()
+        run: make check-tlds

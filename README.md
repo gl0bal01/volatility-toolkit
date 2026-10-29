@@ -33,7 +33,7 @@ chmod +x scripts/vol-analyze.sh
 
 1. **Auto-detects** whether the dump is Windows, Linux, or macOS
 2. Computes MD5 + SHA256 for chain of custody
-3. Runs all relevant plugins in parallel batches
+3. Runs all relevant plugins in parallel (`-j` workers)
 4. Separates stdout from stderr (errors never corrupt output)
 5. Shows per-plugin timing and success/failure status
 6. Generates a structured summary report (text + optional JSON)
@@ -69,7 +69,7 @@ vol-analyze <memory_dump> [options]
 
 OPTIONS
         --os TYPE               Target OS: windows, linux, mac, auto (default: auto)
-    -o, --output DIR            Output directory (default: volatility_output)
+    -o, --output DIR            New or empty output directory (default: volatility_output)
     -j, --jobs N                Max parallel plugins (default: 4)
         --symbols DIR           Extra Volatility 3 symbol directory (Linux/macOS ISF files)
         --isf-url URL           Remote ISF index to look up kernel symbols (https:// or file://)
@@ -127,12 +127,16 @@ volatility_output/
 ├── malfind.txt                  # Malware detection
 ├── *.err                        # Per-plugin error logs
 ├── vol.log                      # Volatility debug log of the first plugin (symbol lookup)
+├── dumpfiles_index.txt / .err   # (Windows --dump-files)
+├── registry_dump_index.txt / .err  # (Windows --dump-registry)
 ├── ...                          # (all plugin outputs)
 ├── strings/                     # (with --extract-strings)
 │   ├── all.txt                  # Raw strings
 │   ├── ipv4.txt                 # IPv4 addresses
 │   ├── urls.txt                 # URLs
 │   ├── domains.txt              # Domain names, IANA TLDs only, lower-cased (by frequency)
+│   ├── domains_lowconf.txt      # Names that look like code or file names (this.id, run.sh)
+│   ├── reverse_dns.txt          # Reverse-DNS IDs split out of domains (com.apple.audio)
 │   ├── emails.txt               # Email addresses
 │   └── windows_paths.txt        # Windows paths  (Windows)
 │   └── unix_paths.txt           # Unix paths     (Linux/macOS)
@@ -141,6 +145,10 @@ volatility_output/
 ├── analysis_summary.txt         # Human-readable report
 └── analysis_summary.json        # (with --json)
 ```
+
+The output directory must be new or empty: results of two dumps are never mixed, and nothing planted in a shared directory is written through. Run it on a directory only you can write to.
+
+The IOC lists in `strings/` are triage aids built with heuristics tuned on real dumps (IANA TLDs, noise filters for code and file names). A name that matches a noise filter goes to `domains_lowconf.txt`, not away: an attacker can register a host that looks like noise (`evil.app`, `navigator.top`). The lists can still miss an indicator. For evidence work, search `strings/all.txt`, which keeps every string, or use dedicated tools such as [bulk_extractor](https://github.com/simsong/bulk_extractor) or YARA.
 
 ## Documentation
 
@@ -177,8 +185,10 @@ cp completions/vol-analyze.zsh ~/.zsh/completions/_vol-analyze
 
 - [Volatility 3](https://github.com/volatilityfoundation/volatility3) 2.26.2+ (current plugin names) — `vol` in PATH (or set `VOL3_CMD`); install `volatility3[full]` for the hashdump/lsadump plugins (pycryptodome)
 - Bash 4.0+ (macOS ships 3.2: `brew install bash`)
-- Standard Unix tools: `strings`, `md5sum`/`md5`, `sha256sum`/`shasum`, `grep`, `sort`, `uniq`
+- Standard Unix tools: `strings`, `md5sum`/`md5`, `sha256sum`/`shasum`, `awk`, `sed`, `grep`, `tr`, `fold`, `sort`, `uniq`, `find`, `stat`, `mktemp`, `mkfifo`
+- `timeout` (GNU coreutils; `gtimeout` from Homebrew on macOS) to time-limit OS auto-detection (optional)
 - GNU binutils `strings` for UTF-16LE string extraction on Windows dumps (optional)
+- `iconv` to keep the JSON report valid for file names that are not UTF-8 (optional)
 
 ### Linux/macOS Memory Dumps
 
@@ -188,7 +198,11 @@ Linux and macOS analysis requires matching kernel symbols (ISF): pass a director
 
 ## Contributing
 
-Issues, feature requests, and pull requests are welcome.
+Issues, feature requests, and pull requests are welcome. Report security problems privately, as described in [SECURITY.md](SECURITY.md).
+
+Tests:
+- `make ci` runs every push check locally: lint (ShellCheck), dependency probes, and the unit and end-to-end tests with a fake `vol`. `make hooks` runs it before every `git push`.
+- `make real-test` runs `vol-analyze` with the real Volatility 3 on public Linux, Windows 10 and macOS 10.9 images (~2 GB download). GitHub runs it monthly with the latest Volatility 3 release, together with `make check-tlds`, which fails when IANA's TLD list has changed (refresh with `make update-tlds`). GitHub pauses scheduled workflows after 60 days without repository activity; re-enable "Real dumps" in the Actions tab.
 
 ## License
 
